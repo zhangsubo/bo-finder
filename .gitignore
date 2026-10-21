@@ -1,0 +1,18 @@
+# Build artifacts
+build/
+*.app
+*.appex
+*.dSYM
+
+# macOS system files
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Xcode / SwiftPM
+.build/
+.swiftpm/
+DerivedData/
+*.xcodeproj/project.xcworkspace/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
