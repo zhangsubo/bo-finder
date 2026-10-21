@@ -32,9 +32,10 @@ mkdir -p "$APPEX_BUNDLE/Contents/Resources"
 
 cp "$ROOT_DIR/BoFinderApp/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
 cp "$ROOT_DIR/BoFinderSync/Info.plist" "$APPEX_BUNDLE/Contents/Info.plist"
+cp "$ROOT_DIR/BoFinderApp/AppLogo.png" "$APP_BUNDLE/Contents/Resources/AppLogo.png"
 
 ICONSET_DIR="$BUILD_DIR/AppIcon.iconset"
-xcrun swift "$ROOT_DIR/scripts/generate_icon.swift" "$ICONSET_DIR"
+xcrun swift "$ROOT_DIR/scripts/generate_icon.swift" "$ICONSET_DIR" "$ROOT_DIR/BoFinderApp/AppLogo.png"
 iconutil -c icns "$ICONSET_DIR" -o "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
 cp "$APP_BUNDLE/Contents/Resources/AppIcon.icns" "$APPEX_BUNDLE/Contents/Resources/AppIcon.icns"
 rm -rf "$ICONSET_DIR"

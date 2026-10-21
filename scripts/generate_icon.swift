@@ -1,9 +1,13 @@
 import Cocoa
 
 let iconsetPath = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "build/AppIcon.iconset"
+let sourceLogoPath = CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : "BoFinderApp/AppLogo.png"
+
 let fm = FileManager.default
 try? fm.removeItem(atPath: iconsetPath)
 try fm.createDirectory(atPath: iconsetPath, withIntermediateDirectories: true)
+
+let sourceImage = NSImage(contentsOfFile: sourceLogoPath)
 
 func renderIcon(size: Int) -> NSImage {
     let img = NSImage(size: NSSize(width: size, height: size))
@@ -13,55 +17,29 @@ func renderIcon(size: Int) -> NSImage {
         return img
     }
 
+    ctx.interpolationQuality = .high
     let s = CGFloat(size)
-    let pad = s * 0.08
+    let pad = s * 0.06
     let rect = CGRect(x: pad, y: pad, width: s - pad * 2, height: s - pad * 2)
     let radius = rect.width * 0.225
 
-    // Background rounded squircle with blue-indigo gradient
     let path = NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius)
     ctx.saveGState()
     path.addClip()
 
-    let colors = [
-        NSColor(calibratedRed: 0.14, green: 0.52, blue: 0.98, alpha: 1.0).cgColor,
-        NSColor(calibratedRed: 0.22, green: 0.25, blue: 0.86, alpha: 1.0).cgColor
-    ] as CFArray
-    let space = CGColorSpaceCreateDeviceRGB()
-    if let grad = CGGradient(colorsSpace: space, colors: colors, locations: [0.0, 1.0]) {
-        ctx.drawLinearGradient(
-            grad,
-            start: CGPoint(x: rect.minX, y: rect.maxY),
-            end: CGPoint(x: rect.maxX, y: rect.minY),
-            options: []
+    if let src = sourceImage {
+        src.draw(
+            in: rect,
+            from: NSRect(origin: .zero, size: src.size),
+            operation: .sourceOver,
+            fraction: 1.0
         )
+    } else {
+        NSColor.systemBlue.setFill()
+        rect.fill()
     }
+
     ctx.restoreGState()
-
-    // Draw SF Symbol in center
-    if let sym = NSImage(systemSymbolName: "doc.on.clipboard.fill", accessibilityDescription: nil) {
-        let config = NSImage.SymbolConfiguration(pointSize: s * 0.44, weight: .bold)
-        if let configured = sym.withSymbolConfiguration(config) {
-            let tinted = NSImage(size: configured.size)
-            tinted.lockFocus()
-            NSColor.white.set()
-            let symRect = NSRect(origin: .zero, size: configured.size)
-            configured.draw(in: symRect)
-            symRect.fill(using: .sourceAtop)
-            tinted.unlockFocus()
-
-            let drawW = configured.size.width
-            let drawH = configured.size.height
-            let drawRect = NSRect(
-                x: (s - drawW) / 2,
-                y: (s - drawH) / 2,
-                width: drawW,
-                height: drawH
-            )
-            tinted.draw(in: drawRect)
-        }
-    }
-
     img.unlockFocus()
     return img
 }

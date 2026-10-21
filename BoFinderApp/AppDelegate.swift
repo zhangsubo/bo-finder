@@ -4,12 +4,16 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private let statusMenu = NSMenu()
+    private lazy var menuBarLogoImage: NSImage? = makeRoundedLogoImage(pointSize: 18, cornerRadius: 4)
+    private lazy var dockLogoImage: NSImage? = makeRoundedLogoImage(pointSize: 256, cornerRadius: 56)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        applyDockIconPolicy(restoreSettingsWindowIfVisible: false)
         setupStatusItem()
 
         CutPasteManager.shared.onStateUpdated = { [weak self] in
             DispatchQueue.main.async {
+                self?.applyDockIconPolicy(restoreSettingsWindowIfVisible: true)
                 self?.updateStatusItemAppearance()
             }
         }
@@ -41,29 +45,91 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return true
     }
 
+    func applicationDidBecomeActive(_ notification: Notification) {
+        // Clicking the Dock icon activates the app — ensure the Settings panel opens
+        if !SettingsWindowController.shared.isWindowVisible {
+            SettingsWindowController.shared.showWindow()
+        }
+    }
+
+    func applyDockIconPolicy(restoreSettingsWindowIfVisible: Bool) {
+        let showDock = CutPasteManager.shared.state.config.showDockIcon
+        let desiredPolicy: NSApplication.ActivationPolicy = showDock ? .regular : .accessory
+        let wasSettingsVisible = SettingsWindowController.shared.isWindowVisible
+
+        if NSApp.activationPolicy() != desiredPolicy {
+            NSApp.setActivationPolicy(desiredPolicy)
+            if restoreSettingsWindowIfVisible && wasSettingsVisible {
+                DispatchQueue.main.async {
+                    SettingsWindowController.shared.showWindow()
+                }
+            }
+        }
+
+        if showDock, let dockImg = dockLogoImage {
+            NSApp.applicationIconImage = dockImg
+        }
+    }
+
     private func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusMenu.delegate = self
-        statusItem.menu = statusMenu
+        if let button = statusItem.button {
+            button.target = self
+            button.action = #selector(handleStatusBarButtonClicked(_:))
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+            button.toolTip = "点击打开 BoFinder 设置面板（右键打开快捷菜单）"
+        }
         updateStatusItemAppearance()
+    }
+
+    @objc private func handleStatusBarButtonClicked(_ sender: NSStatusBarButton) {
+        let event = NSApp.currentEvent
+        let isRightClick = event?.type == .rightMouseUp || (event?.modifierFlags.contains(.control) == true)
+        if isRightClick {
+            statusItem.menu = statusMenu
+            sender.performClick(nil)
+            statusItem.menu = nil
+        } else {
+            SettingsWindowController.shared.showWindow()
+        }
     }
 
     private func updateStatusItemAppearance() {
         guard let button = statusItem?.button else { return }
         let state = CutPasteManager.shared.state
 
-        if state.isCutActive && !state.cutFilePaths.isEmpty {
-            let img = NSImage(systemSymbolName: "scissors", accessibilityDescription: "BoFinder Cut Active")
-            img?.isTemplate = true
-            button.image = img
-            button.imagePosition = .imageLeading
-            button.title = " \(state.cutFilePaths.count)"
+        if let logo = menuBarLogoImage {
+            button.image = logo
         } else {
-            let img = NSImage(systemSymbolName: "doc.on.clipboard", accessibilityDescription: "BoFinder")
-            img?.isTemplate = true
-            button.image = img
+            let fallback = NSImage(systemSymbolName: "doc.on.clipboard", accessibilityDescription: "BoFinder")
+            fallback?.isTemplate = true
+            button.image = fallback
+        }
+        button.imagePosition = .imageLeading
+
+        if state.isCutActive && !state.cutFilePaths.isEmpty {
+            button.title = " ✂️\(state.cutFilePaths.count)"
+        } else {
             button.title = ""
         }
+    }
+
+    private func makeRoundedLogoImage(pointSize: CGFloat, cornerRadius: CGFloat) -> NSImage? {
+        guard let url = Bundle.main.url(forResource: "AppLogo", withExtension: "png"),
+              let src = NSImage(contentsOf: url) else {
+            return nil
+        }
+        let size = NSSize(width: pointSize, height: pointSize)
+        let img = NSImage(size: size, flipped: false) { rect in
+            NSGraphicsContext.current?.imageInterpolation = .high
+            let path = NSBezierPath(roundedRect: rect, xRadius: cornerRadius, yRadius: cornerRadius)
+            path.addClip()
+            src.draw(in: rect, from: NSRect(origin: .zero, size: src.size), operation: .sourceOver, fraction: 1.0)
+            return true
+        }
+        img.isTemplate = false
+        return img
     }
 
     // MARK: - NSMenuDelegate

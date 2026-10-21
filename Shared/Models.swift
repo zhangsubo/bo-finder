@@ -170,6 +170,7 @@ public struct BoFinderConfig: Codable, Equatable {
     public var defaultTerminal: TerminalApp
     public var enableOpenTerminalInMenu: Bool
     public var enableOpenInOrcaInMenu: Bool
+    public var showDockIcon: Bool
 
     public init(
         enabledFormats: [PathFormat] = [.posix, .url, .windows, .terminal, .tilde, .filename],
@@ -182,7 +183,8 @@ public struct BoFinderConfig: Codable, Equatable {
         showTopQuickBarOnRightClick: Bool = true,
         defaultTerminal: TerminalApp = .iterm2,
         enableOpenTerminalInMenu: Bool = true,
-        enableOpenInOrcaInMenu: Bool = true
+        enableOpenInOrcaInMenu: Bool = true,
+        showDockIcon: Bool = true
     ) {
         self.enabledFormats = enabledFormats
         self.useSubmenuForCopyPath = useSubmenuForCopyPath
@@ -195,6 +197,7 @@ public struct BoFinderConfig: Codable, Equatable {
         self.defaultTerminal = defaultTerminal
         self.enableOpenTerminalInMenu = enableOpenTerminalInMenu
         self.enableOpenInOrcaInMenu = enableOpenInOrcaInMenu
+        self.showDockIcon = showDockIcon
     }
 
     public init(from decoder: Decoder) throws {
@@ -210,6 +213,7 @@ public struct BoFinderConfig: Codable, Equatable {
         self.defaultTerminal = try container.decodeIfPresent(TerminalApp.self, forKey: .defaultTerminal) ?? .iterm2
         self.enableOpenTerminalInMenu = try container.decodeIfPresent(Bool.self, forKey: .enableOpenTerminalInMenu) ?? true
         self.enableOpenInOrcaInMenu = try container.decodeIfPresent(Bool.self, forKey: .enableOpenInOrcaInMenu) ?? true
+        self.showDockIcon = try container.decodeIfPresent(Bool.self, forKey: .showDockIcon) ?? true
     }
 }
 

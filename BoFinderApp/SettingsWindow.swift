@@ -32,12 +32,12 @@ struct SettingsView: View {
 
             permissionsAndDoctorTab
                 .tabItem {
-                    Label("权限与扩展诊断", systemImage: "checkmark.shield")
+                    Label("通用设置", systemImage: "gearshape.fill")
                 }
                 .tag(3)
         }
         .padding(20)
-        .frame(width: 620, height: 520)
+        .frame(width: 620, height: 540)
         .onAppear {
             extensionDoctor.refreshPlugins()
             eventTapManager.checkPermissionAndStartIfPossible(promptIfNeeded: false)
@@ -344,12 +344,47 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - Tab 3: Permissions & Extension Doctor
+    // MARK: - Tab 4: General Settings (通用设置)
 
     private var permissionsAndDoctorTab: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                GroupBox(label: Label("1. 辅助功能权限（用于接管 Finder 中的 ⌘+X / ⌘+V 快捷键）", systemImage: "hand.raised.fill")) {
+                GroupBox(label: Label("1. 应用图标与外观（Dock 与顶部菜单栏）", systemImage: "app.badge")) {
+                    HStack(spacing: 14) {
+                        if let logoURL = Bundle.main.url(forResource: "AppLogo", withExtension: "png"),
+                           let nsImg = NSImage(contentsOf: logoURL) {
+                            Image(nsImage: nsImg)
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                                .frame(width: 48, height: 48)
+                                .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                                .shadow(color: .black.opacity(0.15), radius: 3, x: 0, y: 1)
+                        }
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            Toggle("在 Dock 栏显示应用图标", isOn: Binding(
+                                get: { cutPasteManager.state.config.showDockIcon },
+                                set: { val in cutPasteManager.updateConfig { $0.showDockIcon = val } }
+                            ))
+                            .fontWeight(.semibold)
+
+                            Text("• 左键点击 Dock 图标或顶部菜单栏 Logo，可直接打开此设置面板。\n• 右键（或 ⌃+左键）点击顶部菜单栏 Logo，可弹出快捷操作菜单。")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        Spacer()
+
+                        Button("退出 BoFinder") {
+                            NSApp.terminate(nil)
+                        }
+                    }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                GroupBox(label: Label("2. 辅助功能权限（用于接管 Finder 中的 ⌘+X / ⌘+V 快捷键）", systemImage: "hand.raised.fill")) {
                     HStack(spacing: 12) {
                         Image(systemName: eventTapManager.isAccessibilityTrusted ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                             .foregroundColor(eventTapManager.isAccessibilityTrusted ? .green : .orange)
@@ -380,7 +415,7 @@ struct SettingsView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
-                GroupBox(label: Label("2. Finder 右键菜单扩展与冲突管理", systemImage: "puzzlepiece.extension.fill")) {
+                GroupBox(label: Label("3. Finder 右键菜单扩展与冲突管理", systemImage: "puzzlepiece.extension.fill")) {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack(spacing: 10) {
                             Image(systemName: extensionDoctor.isBoFinderExtensionEnabled ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
@@ -488,6 +523,10 @@ final class SettingsWindowController {
     static let shared = SettingsWindowController()
     private var window: NSWindow?
 
+    var isWindowVisible: Bool {
+        return window?.isVisible == true
+    }
+
     func showWindow() {
         NSApp.activate(ignoringOtherApps: true)
         if let existing = window {
@@ -497,7 +536,7 @@ final class SettingsWindowController {
 
         let hostingController = NSHostingController(rootView: SettingsView())
         let win = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 600, height: 500),
+            contentRect: NSRect(x: 0, y: 0, width: 620, height: 540),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
