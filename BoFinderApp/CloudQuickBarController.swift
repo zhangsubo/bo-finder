@@ -80,6 +80,36 @@ final class CloudQuickBarController {
             rowStack.addArrangedSubview(btn)
         }
 
+        // Open Terminal & Open in Orca buttons
+        if (state.config.enableOpenTerminalInMenu || state.config.enableOpenInOrcaInMenu),
+           let destDir = currentDestinationURL {
+            rowStack.addArrangedSubview(makeVerticalDivider())
+            let dirName = destDir.lastPathComponent.isEmpty ? destDir.path : destDir.lastPathComponent
+
+            if state.config.enableOpenTerminalInMenu {
+                let defaultTerm = state.config.defaultTerminal
+                let termBtn = makeActionButton(
+                    title: "终端(\(defaultTerm.shortTitle))",
+                    symbolName: defaultTerm.symbolName,
+                    tag: 200,
+                    action: #selector(handleOpenTerminalClicked(_:))
+                )
+                termBtn.toolTip = "在 \(defaultTerm.title) 中打开「\(dirName)」(\(destDir.path))"
+                rowStack.addArrangedSubview(termBtn)
+            }
+
+            if state.config.enableOpenInOrcaInMenu && state.config.defaultTerminal != .orca {
+                let orcaBtn = makeActionButton(
+                    title: "Orca",
+                    symbolName: TerminalApp.orca.symbolName,
+                    tag: 201,
+                    action: #selector(handleOpenInOrcaClicked(_:))
+                )
+                orcaBtn.toolTip = "在 Orca 中打开「\(dirName)」(\(destDir.path))"
+                rowStack.addArrangedSubview(orcaBtn)
+            }
+        }
+
         // Cut & Paste Move buttons
         if state.config.enableContextMenuCutAndPaste {
             rowStack.addArrangedSubview(makeVerticalDivider())
@@ -210,6 +240,22 @@ final class CloudQuickBarController {
             copiedText: formatted
         )
         CutPasteManager.shared.processExtensionAction(payload)
+    }
+
+    @objc private func handleOpenTerminalClicked(_ sender: NSButton) {
+        let dest = currentDestinationURL
+        dismiss()
+        dismissFinderContextMenu()
+        guard let targetDir = dest else { return }
+        TerminalLauncher.shared.openTerminal(at: targetDir)
+    }
+
+    @objc private func handleOpenInOrcaClicked(_ sender: NSButton) {
+        let dest = currentDestinationURL
+        dismiss()
+        dismissFinderContextMenu()
+        guard let targetDir = dest else { return }
+        TerminalLauncher.shared.openInOrca(at: targetDir, createTerminalIfNeeded: true, forceNewTerminal: false)
     }
 
     @objc private func handleCutClicked(_ sender: NSButton) {

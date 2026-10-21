@@ -27,7 +27,12 @@
    - 右键菜单与顶部置顶栏同步提供「剪切」与「粘贴移动」按钮，支持纯鼠标操作。
    - 内置轻量级毛玻璃 HUD 悬浮提示与状态栏剪切计数角标。
 
-3. **Finder 右键扩展冲突诊断器**：
+3. **右键在此处打开终端 & 在 Orca 中打开**：
+   - 在文件夹上右键，直接**在该文件夹地址上打开终端**（在文件夹空白处或文件上右键则在当前所在目录打开终端）。
+   - 支持自由设置默认终端：**iTerm2**、**Ghostty**、**系统自带终端 (`Terminal.app`)**、**Orca**。
+   - **Orca (`Orca.app`) 深度集成**：支持一键将任意 Git 仓库或普通文件夹导入并激活到 Orca 工作区，同时自动创建/聚焦该目录的终端面板；可与默认终端并存显示，实现「终端 + Orca」双入口一键直达。
+
+4. **Finder 右键扩展冲突诊断器**：
    - 针对 macOS Finder 同一目录仅激活一个 `FinderSync` 扩展的系统限制，内置扩展冲突管理面板，支持一键关闭抢占根目录的冲突扩展（自动保留坚果云、百度网盘等网盘侧边栏扩展）。
 
 ---
@@ -47,6 +52,7 @@ bo-finder/
 │   ├── AppDelegate.swift              # 状态栏菜单、快捷复制与生命周期管理
 │   ├── EventTapManager.swift          # CGEventTap 监听 Finder 中 ⌘+X / ⌘+V / Esc / 右键事件
 │   ├── CutPasteManager.swift          # 剪切状态机、跨进程动作分发与文件移动冲突处理
+│   ├── TerminalLauncher.swift         # iTerm2 / Ghostty / 系统终端 / Orca.app 终端与工作区启动器
 │   ├── CloudQuickBarController.swift  # 右键菜单顶部置顶快捷栏（兼顾 iCloud 云盘目录支持）
 │   ├── QuickPopupMenuController.swift # ⌥+右键 / ⌃+⌥+C 独立快捷弹出菜单
 │   ├── FinderSelectionHelper.swift    # 基于 Accessibility 读取 Finder 选中项、光标命中项与当前目录

@@ -18,20 +18,26 @@ struct SettingsView: View {
                 }
                 .tag(0)
 
+            terminalAndOrcaTab
+                .tabItem {
+                    Label("终端与 Orca", systemImage: "terminal")
+                }
+                .tag(1)
+
             cutPasteTab
                 .tabItem {
                     Label("剪切与粘贴", systemImage: "scissors")
                 }
-                .tag(1)
+                .tag(2)
 
             permissionsAndDoctorTab
                 .tabItem {
                     Label("权限与扩展诊断", systemImage: "checkmark.shield")
                 }
-                .tag(2)
+                .tag(3)
         }
         .padding(20)
-        .frame(width: 600, height: 500)
+        .frame(width: 620, height: 520)
         .onAppear {
             extensionDoctor.refreshPlugins()
             eventTapManager.checkPermissionAndStartIfPossible(promptIfNeeded: false)
@@ -131,7 +137,122 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - Tab 2: Cut & Paste
+    // MARK: - Tab 2: Terminal & Orca
+
+    private var terminalAndOrcaTab: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                GroupBox(label: Label("右键「在此处打开终端」设置", systemImage: "terminal")) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Toggle("在右键菜单及置顶快捷栏中显示「在此处打开终端」", isOn: Binding(
+                            get: { cutPasteManager.state.config.enableOpenTerminalInMenu },
+                            set: { val in cutPasteManager.updateConfig { $0.enableOpenTerminalInMenu = val } }
+                        ))
+                        .fontWeight(.semibold)
+
+                        Text("• 在文件夹上右键：直接在该文件夹地址上打开终端。\n• 在文件夹空白处或文件上右键：在当前所在目录打开终端。")
+                            .font(.system(size: 12))
+                            .foregroundColor(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        Divider()
+
+                        Text("选择默认终端应用：")
+                            .fontWeight(.medium)
+
+                        ForEach(TerminalApp.allCases) { app in
+                            let installed = TerminalLauncher.shared.isInstalled(app)
+                            let isSelected = cutPasteManager.state.config.defaultTerminal == app
+                            HStack(spacing: 10) {
+                                Button(action: {
+                                    cutPasteManager.updateConfig { $0.defaultTerminal = app }
+                                }) {
+                                    HStack(spacing: 8) {
+                                        Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
+                                            .foregroundColor(isSelected ? .accentColor : .secondary)
+                                        Image(systemName: app.symbolName)
+                                            .frame(width: 18)
+                                            .foregroundColor(.accentColor)
+                                        Text(app.title)
+                                            .fontWeight(isSelected ? .semibold : .regular)
+                                            .foregroundColor(.primary)
+                                    }
+                                }
+                                .buttonStyle(.plain)
+
+                                Spacer()
+
+                                if installed {
+                                    Text("已安装")
+                                        .font(.system(size: 11, weight: .medium))
+                                        .foregroundColor(.green)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(Color.green.opacity(0.12))
+                                        .cornerRadius(4)
+                                } else {
+                                    Text("未安装")
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.secondary)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(Color.gray.opacity(0.12))
+                                        .cornerRadius(4)
+                                }
+
+                                if installed {
+                                    Button("测试打开") {
+                                        let homeURL = URL(fileURLWithPath: PathFormatter.realHomeDirectory())
+                                        TerminalLauncher.shared.openTerminal(at: homeURL, using: app)
+                                    }
+                                    .controlSize(.small)
+                                }
+                            }
+                            .padding(.vertical, 2)
+                        }
+                    }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                GroupBox(label: Label("在 Orca 中打开 (Orca.app 深度集成)", systemImage: "sparkles.rectangle.stack")) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Toggle("在右键菜单及置顶快捷栏中独立显示「在 Orca 中打开」按钮", isOn: Binding(
+                            get: { cutPasteManager.state.config.enableOpenInOrcaInMenu },
+                            set: { val in cutPasteManager.updateConfig { $0.enableOpenInOrcaInMenu = val } }
+                        ))
+                        .fontWeight(.semibold)
+
+                        Text("• 支持将任意 Git 仓库或普通文件夹一键导入并激活到 Orca 工作区，同时自动打开并聚焦该目录的终端面板。\n• 当默认终端已设为 iTerm2 / Ghostty / 系统终端时，开启此项可同时拥有「终端」和「Orca」两个快捷入口。")
+                            .font(.system(size: 12))
+                            .foregroundColor(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        HStack {
+                            let orcaInstalled = TerminalLauncher.shared.isInstalled(.orca)
+                            Image(systemName: orcaInstalled ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                                .foregroundColor(orcaInstalled ? .green : .orange)
+                            Text(orcaInstalled ? "已检测到 /Applications/Orca.app" : "未检测到 /Applications/Orca.app")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            if orcaInstalled {
+                                Button("测试在 Orca 中打开当前用户目录") {
+                                    let homeURL = URL(fileURLWithPath: PathFormatter.realHomeDirectory())
+                                    TerminalLauncher.shared.openInOrca(at: homeURL)
+                                }
+                            }
+                        }
+                        .padding(.top, 4)
+                    }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+    }
+
+    // MARK: - Tab 3: Cut & Paste
 
     private var cutPasteTab: some View {
         VStack(alignment: .leading, spacing: 16) {

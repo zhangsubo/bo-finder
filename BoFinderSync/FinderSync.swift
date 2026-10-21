@@ -102,7 +102,39 @@ class FinderSync: FIFinderSync {
             }
         }
 
-        // 2. Cut & Paste Move section
+        // 2. Open Terminal & Open in Orca section
+        if config.enableOpenTerminalInMenu || config.enableOpenInOrcaInMenu {
+            if let targetDir = effectiveDestinationDirectory() {
+                menu.addItem(NSMenuItem.separator())
+                let dirName = targetDir.lastPathComponent.isEmpty ? targetDir.path : targetDir.lastPathComponent
+
+                if config.enableOpenTerminalInMenu {
+                    let termTitle = "在此处打开终端 (\(config.defaultTerminal.shortTitle) · \(dirName))"
+                    let openTermItem = NSMenuItem(
+                        title: termTitle,
+                        action: #selector(openDefaultTerminalHere(_:)),
+                        keyEquivalent: ""
+                    )
+                    openTermItem.target = self
+                    openTermItem.image = symbolImage(config.defaultTerminal.symbolName)
+                    menu.addItem(openTermItem)
+                }
+
+                if config.enableOpenInOrcaInMenu && config.defaultTerminal != .orca {
+                    let orcaTitle = "在 Orca 中打开「\(dirName)」"
+                    let openOrcaItem = NSMenuItem(
+                        title: orcaTitle,
+                        action: #selector(openInOrcaHere(_:)),
+                        keyEquivalent: ""
+                    )
+                    openOrcaItem.target = self
+                    openOrcaItem.image = symbolImage(TerminalApp.orca.symbolName)
+                    menu.addItem(openOrcaItem)
+                }
+            }
+        }
+
+        // 3. Cut & Paste Move section
         if config.enableContextMenuCutAndPaste {
             menu.addItem(NSMenuItem.separator())
 
@@ -188,12 +220,17 @@ class FinderSync: FIFinderSync {
 
     private func effectiveDestinationDirectory() -> URL? {
         let controller = FIFinderSyncController.default()
-        if let selected = controller.selectedItemURLs(), selected.count == 1 {
-            let candidate = selected[0]
-            var isDir: ObjCBool = false
-            if FileManager.default.fileExists(atPath: candidate.path, isDirectory: &isDir), isDir.boolValue {
-                return candidate
+        if let selected = controller.selectedItemURLs(), !selected.isEmpty {
+            for candidate in selected {
+                var isDir: ObjCBool = false
+                if FileManager.default.fileExists(atPath: candidate.path, isDirectory: &isDir), isDir.boolValue {
+                    return candidate
+                }
             }
+            if let targeted = controller.targetedURL() {
+                return targeted
+            }
+            return selected[0].deletingLastPathComponent()
         }
         return controller.targetedURL()
     }
@@ -249,6 +286,29 @@ class FinderSync: FIFinderSync {
 
     @objc func copyMarkdown(_ sender: Any?) {
         performCopy(format: .markdown)
+    }
+
+    @objc func openDefaultTerminalHere(_ sender: Any?) {
+        refreshStateIfNeeded()
+        guard let destURL = effectiveDestinationDirectory() else { return }
+        let payload = ExtensionActionPayload(
+            action: .openTerminal,
+            terminalApp: runtimeState.config.defaultTerminal,
+            selectedPaths: [destURL.path],
+            targetDirectoryPath: destURL.path
+        )
+        BoFinderIPC.postExtensionAction(payload)
+    }
+
+    @objc func openInOrcaHere(_ sender: Any?) {
+        guard let destURL = effectiveDestinationDirectory() else { return }
+        let payload = ExtensionActionPayload(
+            action: .openInOrca,
+            terminalApp: .orca,
+            selectedPaths: [destURL.path],
+            targetDirectoryPath: destURL.path
+        )
+        BoFinderIPC.postExtensionAction(payload)
     }
 
     @objc func cutSelectedItems(_ sender: Any?) {

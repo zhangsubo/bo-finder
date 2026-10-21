@@ -164,6 +164,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             quickCopyRoot.submenu = sub
             menu.addItem(quickCopyRoot)
+
+            if let destDir = TerminalLauncher.shared.resolveTargetDirectory(
+                selectedPaths: selectedURLs.map(\.path),
+                targetDirectoryPath: folderURL?.path
+            ) {
+                let dirName = destDir.lastPathComponent.isEmpty ? destDir.path : destDir.lastPathComponent
+                let openTermItem = NSMenuItem(
+                    title: "在此处打开终端 (\(state.config.defaultTerminal.shortTitle) · \(dirName))",
+                    action: #selector(openTerminalFromMenuBar(_:)),
+                    keyEquivalent: ""
+                )
+                openTermItem.target = self
+                openTermItem.representedObject = destDir
+                openTermItem.image = NSImage(systemSymbolName: state.config.defaultTerminal.symbolName, accessibilityDescription: nil)
+                menu.addItem(openTermItem)
+
+                if state.config.enableOpenInOrcaInMenu && state.config.defaultTerminal != .orca {
+                    let openOrcaItem = NSMenuItem(
+                        title: "在 Orca 中打开「\(dirName)」",
+                        action: #selector(openInOrcaFromMenuBar(_:)),
+                        keyEquivalent: ""
+                    )
+                    openOrcaItem.target = self
+                    openOrcaItem.representedObject = destDir
+                    openOrcaItem.image = NSImage(systemSymbolName: TerminalApp.orca.symbolName, accessibilityDescription: nil)
+                    menu.addItem(openOrcaItem)
+                }
+            }
+
             menu.addItem(NSMenuItem.separator())
         }
 
@@ -254,6 +283,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             copiedText: formatted
         )
         CutPasteManager.shared.processExtensionAction(payload)
+    }
+
+    @objc private func openTerminalFromMenuBar(_ sender: NSMenuItem) {
+        guard let destDir = sender.representedObject as? URL else { return }
+        TerminalLauncher.shared.openTerminal(at: destDir)
+    }
+
+    @objc private func openInOrcaFromMenuBar(_ sender: NSMenuItem) {
+        guard let destDir = sender.representedObject as? URL else { return }
+        TerminalLauncher.shared.openInOrca(at: destDir, createTerminalIfNeeded: true, forceNewTerminal: false)
     }
 
     @objc private func recopyLastText(_ sender: Any?) {

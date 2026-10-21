@@ -88,6 +88,76 @@ public enum WindowsPathStyle: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+public enum TerminalApp: String, Codable, CaseIterable, Identifiable {
+    case iterm2 = "iterm2"
+    case ghostty = "ghostty"
+    case systemTerminal = "systemTerminal"
+    case orca = "orca"
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .iterm2:
+            return "iTerm2"
+        case .ghostty:
+            return "Ghostty"
+        case .systemTerminal:
+            return "系统自带终端 (Terminal)"
+        case .orca:
+            return "Orca"
+        }
+    }
+
+    public var shortTitle: String {
+        switch self {
+        case .iterm2:
+            return "iTerm2"
+        case .ghostty:
+            return "Ghostty"
+        case .systemTerminal:
+            return "系统终端"
+        case .orca:
+            return "Orca"
+        }
+    }
+
+    public var bundleIdentifier: String {
+        switch self {
+        case .iterm2:
+            return "com.googlecode.iterm2"
+        case .ghostty:
+            return "com.mitchellh.ghostty"
+        case .systemTerminal:
+            return "com.apple.Terminal"
+        case .orca:
+            return "com.stablyai.orca"
+        }
+    }
+
+    public var defaultAppPath: String {
+        switch self {
+        case .iterm2:
+            return "/Applications/iTerm.app"
+        case .ghostty:
+            return "/Applications/Ghostty.app"
+        case .systemTerminal:
+            return "/System/Applications/Utilities/Terminal.app"
+        case .orca:
+            return "/Applications/Orca.app"
+        }
+    }
+
+    public var symbolName: String {
+        switch self {
+        case .iterm2, .ghostty, .systemTerminal:
+            return "terminal"
+        case .orca:
+            return "sparkles.rectangle.stack"
+        }
+    }
+}
+
 public struct BoFinderConfig: Codable, Equatable {
     public var enabledFormats: [PathFormat]
     public var useSubmenuForCopyPath: Bool
@@ -97,6 +167,9 @@ public struct BoFinderConfig: Codable, Equatable {
     public var showHUDFeedback: Bool
     public var playSoundOnAction: Bool
     public var showTopQuickBarOnRightClick: Bool
+    public var defaultTerminal: TerminalApp
+    public var enableOpenTerminalInMenu: Bool
+    public var enableOpenInOrcaInMenu: Bool
 
     public init(
         enabledFormats: [PathFormat] = [.posix, .url, .windows, .terminal, .tilde, .filename],
@@ -106,7 +179,10 @@ public struct BoFinderConfig: Codable, Equatable {
         enableContextMenuCutAndPaste: Bool = true,
         showHUDFeedback: Bool = true,
         playSoundOnAction: Bool = false,
-        showTopQuickBarOnRightClick: Bool = true
+        showTopQuickBarOnRightClick: Bool = true,
+        defaultTerminal: TerminalApp = .iterm2,
+        enableOpenTerminalInMenu: Bool = true,
+        enableOpenInOrcaInMenu: Bool = true
     ) {
         self.enabledFormats = enabledFormats
         self.useSubmenuForCopyPath = useSubmenuForCopyPath
@@ -116,6 +192,9 @@ public struct BoFinderConfig: Codable, Equatable {
         self.showHUDFeedback = showHUDFeedback
         self.playSoundOnAction = playSoundOnAction
         self.showTopQuickBarOnRightClick = showTopQuickBarOnRightClick
+        self.defaultTerminal = defaultTerminal
+        self.enableOpenTerminalInMenu = enableOpenTerminalInMenu
+        self.enableOpenInOrcaInMenu = enableOpenInOrcaInMenu
     }
 
     public init(from decoder: Decoder) throws {
@@ -128,6 +207,9 @@ public struct BoFinderConfig: Codable, Equatable {
         self.showHUDFeedback = try container.decodeIfPresent(Bool.self, forKey: .showHUDFeedback) ?? true
         self.playSoundOnAction = try container.decodeIfPresent(Bool.self, forKey: .playSoundOnAction) ?? false
         self.showTopQuickBarOnRightClick = try container.decodeIfPresent(Bool.self, forKey: .showTopQuickBarOnRightClick) ?? true
+        self.defaultTerminal = try container.decodeIfPresent(TerminalApp.self, forKey: .defaultTerminal) ?? .iterm2
+        self.enableOpenTerminalInMenu = try container.decodeIfPresent(Bool.self, forKey: .enableOpenTerminalInMenu) ?? true
+        self.enableOpenInOrcaInMenu = try container.decodeIfPresent(Bool.self, forKey: .enableOpenInOrcaInMenu) ?? true
     }
 }
 
@@ -156,11 +238,14 @@ public enum ExtensionActionType: String, Codable {
     case pasteMoveItems = "pasteMoveItems"
     case clearCut = "clearCut"
     case contextMenuOpened = "contextMenuOpened"
+    case openTerminal = "openTerminal"
+    case openInOrca = "openInOrca"
 }
 
 public struct ExtensionActionPayload: Codable {
     public var action: ExtensionActionType
     public var format: PathFormat?
+    public var terminalApp: TerminalApp?
     public var selectedPaths: [String]
     public var targetDirectoryPath: String?
     public var copiedText: String?
@@ -170,6 +255,7 @@ public struct ExtensionActionPayload: Codable {
     public init(
         action: ExtensionActionType,
         format: PathFormat? = nil,
+        terminalApp: TerminalApp? = nil,
         selectedPaths: [String] = [],
         targetDirectoryPath: String? = nil,
         copiedText: String? = nil,
@@ -178,6 +264,7 @@ public struct ExtensionActionPayload: Codable {
     ) {
         self.action = action
         self.format = format
+        self.terminalApp = terminalApp
         self.selectedPaths = selectedPaths
         self.targetDirectoryPath = targetDirectoryPath
         self.copiedText = copiedText

@@ -49,6 +49,41 @@ final class QuickPopupMenuController: NSObject {
             }
         }
 
+        // Open Terminal & Orca items
+        if let destDir = TerminalLauncher.shared.resolveTargetDirectory(
+            selectedPaths: selectedURLs.map(\.path),
+            targetDirectoryPath: folderURL?.path
+        ) {
+            if state.config.enableOpenTerminalInMenu || state.config.enableOpenInOrcaInMenu {
+                menu.addItem(NSMenuItem.separator())
+                let dirName = destDir.lastPathComponent.isEmpty ? destDir.path : destDir.lastPathComponent
+
+                if state.config.enableOpenTerminalInMenu {
+                    let termItem = NSMenuItem(
+                        title: "在此处打开终端 (\(state.config.defaultTerminal.shortTitle) · \(dirName))",
+                        action: #selector(handleOpenTerminal(_:)),
+                        keyEquivalent: ""
+                    )
+                    termItem.target = self
+                    termItem.representedObject = destDir
+                    termItem.image = NSImage(systemSymbolName: state.config.defaultTerminal.symbolName, accessibilityDescription: nil)
+                    menu.addItem(termItem)
+                }
+
+                if state.config.enableOpenInOrcaInMenu && state.config.defaultTerminal != .orca {
+                    let orcaItem = NSMenuItem(
+                        title: "在 Orca 中打开「\(dirName)」",
+                        action: #selector(handleOpenInOrca(_:)),
+                        keyEquivalent: ""
+                    )
+                    orcaItem.target = self
+                    orcaItem.representedObject = destDir
+                    orcaItem.image = NSImage(systemSymbolName: TerminalApp.orca.symbolName, accessibilityDescription: nil)
+                    menu.addItem(orcaItem)
+                }
+            }
+        }
+
         menu.addItem(NSMenuItem.separator())
 
         // Cut item
@@ -127,6 +162,16 @@ final class QuickPopupMenuController: NSObject {
             copiedText: formatted
         )
         CutPasteManager.shared.processExtensionAction(payload)
+    }
+
+    @objc private func handleOpenTerminal(_ sender: NSMenuItem) {
+        guard let destURL = sender.representedObject as? URL else { return }
+        TerminalLauncher.shared.openTerminal(at: destURL)
+    }
+
+    @objc private func handleOpenInOrca(_ sender: NSMenuItem) {
+        guard let destURL = sender.representedObject as? URL else { return }
+        TerminalLauncher.shared.openInOrca(at: destURL, createTerminalIfNeeded: true, forceNewTerminal: false)
     }
 
     @objc private func handleCut(_ sender: NSMenuItem) {

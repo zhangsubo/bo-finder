@@ -70,6 +70,7 @@ xcrun swiftc \
     "$ROOT_DIR/BoFinderApp/HUDWindowController.swift" \
     "$ROOT_DIR/BoFinderApp/FinderSelectionHelper.swift" \
     "$ROOT_DIR/BoFinderApp/FinderExtensionDoctor.swift" \
+    "$ROOT_DIR/BoFinderApp/TerminalLauncher.swift" \
     "$ROOT_DIR/BoFinderApp/CutPasteManager.swift" \
     "$ROOT_DIR/BoFinderApp/QuickPopupMenuController.swift" \
     "$ROOT_DIR/BoFinderApp/CloudQuickBarController.swift" \

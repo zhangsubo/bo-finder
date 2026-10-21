@@ -139,6 +139,22 @@ final class CutPasteManager: ObservableObject {
                 selectedURLs: urls,
                 folderURL: folderURL
             )
+
+        case .openTerminal:
+            if let dirURL = TerminalLauncher.shared.resolveTargetDirectory(
+                selectedPaths: payload.selectedPaths,
+                targetDirectoryPath: payload.targetDirectoryPath
+            ) {
+                TerminalLauncher.shared.openTerminal(at: dirURL, using: payload.terminalApp)
+            }
+
+        case .openInOrca:
+            if let dirURL = TerminalLauncher.shared.resolveTargetDirectory(
+                selectedPaths: payload.selectedPaths,
+                targetDirectoryPath: payload.targetDirectoryPath
+            ) {
+                TerminalLauncher.shared.openInOrca(at: dirURL, createTerminalIfNeeded: true, forceNewTerminal: false)
+            }
         }
     }
 
