@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         applyDockIconPolicy(restoreSettingsWindowIfVisible: false)
+        LaunchAtLoginManager.shared.syncWithConfig()
         setupStatusItem()
 
         CutPasteManager.shared.onStateUpdated = { [weak self] in

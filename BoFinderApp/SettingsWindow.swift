@@ -349,7 +349,7 @@ struct SettingsView: View {
     private var permissionsAndDoctorTab: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                GroupBox(label: Label("1. 应用图标与外观（Dock 与顶部菜单栏）", systemImage: "app.badge")) {
+                GroupBox(label: Label("1. 启动与外观设置（开机自启 / Dock / 菜单栏）", systemImage: "app.badge")) {
                     HStack(spacing: 14) {
                         if let logoURL = Bundle.main.url(forResource: "AppLogo", withExtension: "png"),
                            let nsImg = NSImage(contentsOf: logoURL) {
@@ -361,7 +361,16 @@ struct SettingsView: View {
                                 .shadow(color: .black.opacity(0.15), radius: 3, x: 0, y: 1)
                         }
 
-                        VStack(alignment: .leading, spacing: 6) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Toggle("开机自动启动 BoFinder", isOn: Binding(
+                                get: { cutPasteManager.state.config.launchAtLogin },
+                                set: { val in
+                                    cutPasteManager.updateConfig { $0.launchAtLogin = val }
+                                    LaunchAtLoginManager.shared.setEnabled(val)
+                                }
+                            ))
+                            .fontWeight(.semibold)
+
                             Toggle("在 Dock 栏显示应用图标", isOn: Binding(
                                 get: { cutPasteManager.state.config.showDockIcon },
                                 set: { val in cutPasteManager.updateConfig { $0.showDockIcon = val } }

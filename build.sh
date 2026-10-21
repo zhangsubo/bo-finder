@@ -66,12 +66,14 @@ xcrun swiftc \
     -framework Cocoa \
     -framework SwiftUI \
     -framework ApplicationServices \
+    -framework ServiceManagement \
     "$ROOT_DIR/Shared/Models.swift" \
     "$ROOT_DIR/Shared/PathFormatter.swift" \
     "$ROOT_DIR/Shared/SharedStore.swift" \
     "$ROOT_DIR/BoFinderApp/HUDWindowController.swift" \
     "$ROOT_DIR/BoFinderApp/FinderSelectionHelper.swift" \
     "$ROOT_DIR/BoFinderApp/FinderExtensionDoctor.swift" \
+    "$ROOT_DIR/BoFinderApp/LaunchAtLoginManager.swift" \
     "$ROOT_DIR/BoFinderApp/TerminalLauncher.swift" \
     "$ROOT_DIR/BoFinderApp/CutPasteManager.swift" \
     "$ROOT_DIR/BoFinderApp/QuickPopupMenuController.swift" \
