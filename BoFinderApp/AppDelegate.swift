@@ -4,7 +4,7 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private let statusMenu = NSMenu()
-    private lazy var menuBarLogoImage: NSImage? = makeRoundedLogoImage(pointSize: 18, cornerRadius: 4)
+    private lazy var menuBarLogoImage: NSImage? = makeMenuBarLogoImage()
     private lazy var dockLogoImage: NSImage? = makeRoundedLogoImage(pointSize: 256, cornerRadius: 56)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -113,6 +113,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             button.title = ""
         }
+    }
+
+    private func makeMenuBarLogoImage() -> NSImage? {
+        guard let url = Bundle.main.url(forResource: "MenuBarLogo", withExtension: "png"),
+              let src = NSImage(contentsOf: url) else {
+            return nil
+        }
+        let targetSize = NSSize(width: 20, height: 18)
+        let img = NSImage(size: targetSize, flipped: false) { rect in
+            NSGraphicsContext.current?.imageInterpolation = .high
+            // Crop transparent outer padding so the avatar silhouette fills the menu bar height cleanly
+            let srcW = src.size.width
+            let srcH = src.size.height
+            let cropRect = NSRect(
+                x: srcW * 0.05,
+                y: srcH * 0.09,
+                width: srcW * 0.90,
+                height: srcH * 0.80
+            )
+            src.draw(in: rect, from: cropRect, operation: .sourceOver, fraction: 1.0)
+            return true
+        }
+        img.isTemplate = true
+        return img
     }
 
     private func makeRoundedLogoImage(pointSize: CGFloat, cornerRadius: CGFloat) -> NSImage? {
