@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         LaunchAtLoginManager.shared.syncWithConfig()
         setupStatusItem()
         setupApplicationMenu()
+        EnvManager.shared.activateOnLaunch()
         MeetingManager.shared.activate()
         MeetingManager.shared.onRecordingChanged = { [weak self] in
             let isRec = MeetingManager.shared.active != nil
@@ -489,6 +490,93 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
+        // Environment Variables Quick Menu
+        let envManager = EnvManager.shared
+        let envRoot = NSMenuItem(
+            title: "环境变量维护 (\(envManager.entries.filter(\.isEnabled).count)/\(envManager.entries.count))",
+            action: nil,
+            keyEquivalent: ""
+        )
+        envRoot.image = NSImage(systemSymbolName: "terminal", accessibilityDescription: nil)
+        let envSub = NSMenu(title: "环境变量维护")
+
+        let openEnvItem = NSMenuItem(
+            title: "打开环境变量维护…",
+            action: #selector(openEnvPage(_:)),
+            keyEquivalent: ""
+        )
+        openEnvItem.target = self
+        openEnvItem.image = NSImage(systemSymbolName: "slider.horizontal.3", accessibilityDescription: nil)
+        envSub.addItem(openEnvItem)
+
+        let refreshEnvItem = NSMenuItem(
+            title: "立即同步并刷新终端环境",
+            action: #selector(refreshEnvFromMenuBar(_:)),
+            keyEquivalent: ""
+        )
+        refreshEnvItem.target = self
+        refreshEnvItem.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: nil)
+        envSub.addItem(refreshEnvItem)
+
+        if !envManager.entries.isEmpty {
+            envSub.addItem(.separator())
+
+            let copyHeader = NSMenuItem(title: "点击复制值（右侧可开关条目）", action: nil, keyEquivalent: "")
+            copyHeader.isEnabled = false
+            envSub.addItem(copyHeader)
+
+            for entry in envManager.entries.prefix(15) {
+                let rowSub = NSMenu(title: entry.name)
+                let copyValItem = NSMenuItem(
+                    title: entry.kind == .alias ? "复制快捷命令内容" : "复制值",
+                    action: #selector(copyEnvEntryFromMenuBar(_:)),
+                    keyEquivalent: ""
+                )
+                copyValItem.target = self
+                copyValItem.representedObject = entry.id
+                copyValItem.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: nil)
+                rowSub.addItem(copyValItem)
+
+                let copyStmtItem = NSMenuItem(
+                    title: entry.kind == .alias ? "复制 alias 语句" : "复制 export 语句",
+                    action: #selector(copyEnvCommandFromMenuBar(_:)),
+                    keyEquivalent: ""
+                )
+                copyStmtItem.target = self
+                copyStmtItem.representedObject = entry.id
+                copyStmtItem.image = NSImage(systemSymbolName: "terminal", accessibilityDescription: nil)
+                rowSub.addItem(copyStmtItem)
+
+                rowSub.addItem(.separator())
+
+                let toggleEntryItem = NSMenuItem(
+                    title: entry.isEnabled ? "停用并自动刷新" : "启用并自动刷新",
+                    action: #selector(toggleEnvEntryFromMenuBar(_:)),
+                    keyEquivalent: ""
+                )
+                toggleEntryItem.target = self
+                toggleEntryItem.representedObject = entry.id
+                rowSub.addItem(toggleEntryItem)
+
+                let itemTitle = entry.note.isEmpty ? entry.name : "\(entry.name) · \(entry.note)"
+                let entryMenuItem = NSMenuItem(
+                    title: itemTitle,
+                    action: #selector(copyEnvEntryFromMenuBar(_:)),
+                    keyEquivalent: ""
+                )
+                entryMenuItem.target = self
+                entryMenuItem.representedObject = entry.id
+                entryMenuItem.state = entry.isEnabled ? .on : .off
+                entryMenuItem.image = NSImage(systemSymbolName: entry.kind.symbolName, accessibilityDescription: nil)
+                entryMenuItem.submenu = rowSub
+                envSub.addItem(entryMenuItem)
+            }
+        }
+        envRoot.submenu = envSub
+        menu.addItem(envRoot)
+
+        menu.addItem(NSMenuItem.separator())
+
         let openItem = NSMenuItem(title: "打开 DeskSide", action: #selector(openMainWindow(_:)), keyEquivalent: "")
         openItem.target = self
         menu.addItem(openItem)
@@ -641,6 +729,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openMeetingsPageFromMenuBar(_ sender: Any?) {
         SettingsWindowController.shared.showWindow(page: "meetings")
+    }
+
+    @objc private func openEnvPage(_ sender: Any?) {
+        SettingsWindowController.shared.showWindow(page: "env")
+    }
+
+    @objc private func refreshEnvFromMenuBar(_ sender: Any?) {
+        EnvManager.shared.triggerManualRefresh(showHUD: true)
+    }
+
+    @objc private func copyEnvEntryFromMenuBar(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? UUID,
+              let entry = EnvManager.shared.entries.first(where: { $0.id == id }) else { return }
+        EnvManager.shared.copyEntryValue(entry)
+    }
+
+    @objc private func copyEnvCommandFromMenuBar(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? UUID,
+              let entry = EnvManager.shared.entries.first(where: { $0.id == id }) else { return }
+        EnvManager.shared.copyEntryShellCommand(entry)
+    }
+
+    @objc private func toggleEnvEntryFromMenuBar(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? UUID,
+              let entry = EnvManager.shared.entries.first(where: { $0.id == id }) else { return }
+        EnvManager.shared.setEntryEnabled(id, enabled: !entry.isEnabled)
     }
 
     @objc private func openSettings(_ sender: Any?) {

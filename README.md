@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform: macOS 26+](https://img.shields.io/badge/Platform-macOS%2026%2B-lightgrey.svg)]()
 
-`DeskSide` 是一款运行在个人 Mac 上的原生工具箱（SwiftUI + AppKit），由 BoFinder 演进而来，沿用原有 logo。现已内置文件工具与零 Python 依赖的本地实时会议助手；安全网关仍为占位。
+`DeskSide` 是一款运行在个人 Mac 上的原生工具箱（SwiftUI + AppKit），由 BoFinder 演进而来，沿用原有 logo。现已内置文件工具、环境变量维护与零 Python 依赖的本地实时会议助手；安全网关仍为占位。
 
 主窗口采用固定全局侧边栏，「设置与关于」在所有页面均可访问。菜单栏常驻，关闭窗口后继续运行，支持隐藏 Dock 图标、开机启动和跟随系统／浅色／深色外观。
 
@@ -15,6 +15,14 @@
 - 开机启动配置沿用旧标识并更新为当前安装路径。
 - 使用本地 ad-hoc 签名，升级后 macOS 可能要求重新授予辅助功能权限。在「文件工具 → 权限与诊断」中查看；应用不会自动清除已有授权。
 - 两个 logo 源文件和图标生成方式保持不变。
+
+## 环境变量维护
+
+- 可视化维护常规环境变量（`export`）、密码与 API Key（默认 `••••` 掩码防窥、一键复制明文）以及终端快捷别名（`alias`）。
+- 独立生成托管脚本 `~/.config/deskside/env.zsh`（权限 `0600`），通过轻量钩子自动挂载到 `~/.zshrc`（首次自动备份 `~/.zshrc.deskside-backup`，绝不破坏原有复杂配置）。
+- **保存后自动无感刷新**：每次新增、编辑、启停或删除条目后，自动通过 `SIGUSR1` + `precmd` 时间戳钩子刷新所有已打开的交互式 `zsh` 终端（含自动 `unset` / `unalias` 已停用或删除的条目），并同步 `launchctl setenv` 到 macOS 桌面图形应用环境。
+- **可选系统钥匙串存储**：敏感项默认保存在权限 `0600` 的私有托管文件中（零耗时且支持 SSH）；同时支持按条目开启 macOS Keychain 存储（通过系统 `/usr/bin/security` 免授权弹窗通道读写，配置文件不留明文）。
+- 支持从 `~/.zshrc`、`~/.zshenv`、`~/.zprofile`、`~/.bash_profile` 或任意 `.env` 文件扫描导入已有配置，并提供代理快捷命令、常用 Git 别名等一键模板及状态栏右键快捷菜单。
 
 ## 会议助手（macOS 26+ 原生零依赖架构）
 
@@ -103,6 +111,9 @@ bo-finder/
 ├── BoFinderApp/
 │   ├── main.swift                     # 主程序入口
 │   ├── AppDelegate.swift              # 状态栏菜单、快捷复制与 DeskSide 生命周期管理
+│   ├── EnvModels.swift                # 环境变量、密码密钥、快捷别名模型与 Shell 解析渲染器
+│   ├── EnvManager.swift               # 环境变量持久化、Keychain 通道、~/.zshrc 挂载与终端实时刷新引擎
+│   ├── EnvView.swift                  # 环境变量可视化维护、导入与脚本预览界面
 │   ├── EventTapManager.swift          # CGEventTap 监听 Finder 中剪切粘贴、隐藏文件快捷键与右键事件
 │   ├── HiddenFilesManager.swift       # Finder 隐藏文件状态读写、零闪烁快捷键切换与同步管理
 │   ├── CutPasteManager.swift          # 剪切状态机、跨进程动作分发与文件移动冲突处理
@@ -138,6 +149,7 @@ bo-finder/
 │   └── test_meeting_cloud.py          # Chat Completions 接口契约测试脚本
 └── Tests/
     ├── PathFormatterTests.swift       # 文件工具路径与配置单元测试
+    ├── EnvTests.swift                 # 环境变量模型、解析、安全转义与终端实时刷新测试
     ├── MeetingTests.swift             # 会议模型、Kaldi Fbank、Core ML 声纹、纪要解析与 .docx 导出测试
     ├── MeetingAppleSpeechTests.swift  # WAV 流式读取采样完整性单元测试
     └── MeetingCloudTests.swift        # Chat Completions 接口安全与边界测试
