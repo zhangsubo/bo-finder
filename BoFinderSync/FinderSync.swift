@@ -66,7 +66,7 @@ class FinderSync: FIFinderSync {
 
     override func menu(for menuKind: FIMenuKind) -> NSMenu {
         refreshStateIfNeeded()
-        let menu = NSMenu(title: "BoFinder")
+        let menu = NSMenu(title: "DeskSide")
         let config = runtimeState.config
         let formats = config.enabledFormats.isEmpty ? [.posix, .url, .windows, .terminal] : config.enabledFormats
 

@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="$ROOT_DIR/build"
-APP_BUNDLE="$BUILD_DIR/BoFinder.app"
+APP_BUNDLE="$BUILD_DIR/DeskSide.app"
 APPEX_BUNDLE="$APP_BUNDLE/Contents/PlugIns/BoFinderSync.appex"
 
 SDK_PATH="$(xcrun --sdk macosx --show-sdk-path)"
@@ -21,6 +21,7 @@ xcrun swiftc \
     "$ROOT_DIR/Shared/SharedStore.swift" \
     "$ROOT_DIR/Tests/PathFormatterTests.swift" \
     -o "$BUILD_DIR/run_tests"
+
 "$BUILD_DIR/run_tests"
 
 echo "==> [2/5] Preparing bundle directories..."
@@ -57,12 +58,12 @@ xcrun swiftc \
     "$ROOT_DIR/BoFinderSync/FinderSync.swift" \
     -o "$APPEX_BUNDLE/Contents/MacOS/BoFinderSync"
 
-echo "==> [4/5] Compiling BoFinder.app (Main Menu Bar Application)..."
+echo "==> [4/5] Compiling DeskSide.app (Main Menu Bar Application)..."
 xcrun swiftc \
     -sdk "$SDK_PATH" \
     -target "$TARGET" \
     -O \
-    -module-name BoFinder \
+    -module-name DeskSide \
     -framework Cocoa \
     -framework SwiftUI \
     -framework ApplicationServices \
@@ -73,6 +74,7 @@ xcrun swiftc \
     "$ROOT_DIR/BoFinderApp/HUDWindowController.swift" \
     "$ROOT_DIR/BoFinderApp/FinderSelectionHelper.swift" \
     "$ROOT_DIR/BoFinderApp/FinderExtensionDoctor.swift" \
+    "$ROOT_DIR/BoFinderApp/HiddenFilesManager.swift" \
     "$ROOT_DIR/BoFinderApp/LaunchAtLoginManager.swift" \
     "$ROOT_DIR/BoFinderApp/TerminalLauncher.swift" \
     "$ROOT_DIR/BoFinderApp/CutPasteManager.swift" \
@@ -82,9 +84,9 @@ xcrun swiftc \
     "$ROOT_DIR/BoFinderApp/SettingsWindow.swift" \
     "$ROOT_DIR/BoFinderApp/AppDelegate.swift" \
     "$ROOT_DIR/BoFinderApp/main.swift" \
-    -o "$APP_BUNDLE/Contents/MacOS/BoFinder"
+    -o "$APP_BUNDLE/Contents/MacOS/DeskSide"
 
-echo "==> [5/5] Code signing and registering Finder Sync Extension..."
+echo "==> [5/5] Code signing bundles..."
 codesign --force --sign - \
     --entitlements "$ROOT_DIR/BoFinderSync/BoFinderSync.entitlements" \
     "$APPEX_BUNDLE"
@@ -93,8 +95,11 @@ codesign --force --sign - \
     --entitlements "$ROOT_DIR/BoFinderApp/BoFinder.entitlements" \
     "$APP_BUNDLE"
 
-pluginkit -a "$APPEX_BUNDLE" || true
-pluginkit -e use -i com.bofinder.app.FinderSync || true
+# Building does not change the active Finder extension. The app registers it on launch.
+if [[ "${1:-}" == "--register" ]]; then
+    pluginkit -a "$APPEX_BUNDLE"
+    pluginkit -e use -i com.bofinder.app.FinderSync
+fi
 
 echo ""
 echo "✅ Build complete: $APP_BUNDLE"

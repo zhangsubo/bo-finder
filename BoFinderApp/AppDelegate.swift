@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         applyDockIconPolicy(restoreSettingsWindowIfVisible: false)
         LaunchAtLoginManager.shared.syncWithConfig()
         setupStatusItem()
+        setupApplicationMenu()
 
         CutPasteManager.shared.onStateUpdated = { [weak self] in
             DispatchQueue.main.async {
@@ -26,19 +27,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         FinderExtensionDoctor.shared.registerAndEnableOurExtension()
 
         // Check Accessibility permission for ⌘+X / ⌘+V event tap
-        EventTapManager.shared.checkPermissionAndStartIfPossible(promptIfNeeded: true)
+        EventTapManager.shared.checkPermissionAndStartIfPossible(promptIfNeeded: false)
 
         updateStatusItemAppearance()
 
         HUDWindowController.shared.show(
-            title: "BoFinder 已启动",
-            subtitle: "Finder 右键复制路径与 ⌘+X / ⌘+V 剪切已就绪",
+            title: "DeskSide 已启动",
+            subtitle: EventTapManager.shared.isEventTapRunning ? "文件工具已就绪" : "可在权限与诊断中检查文件工具状态",
             symbolName: "sparkles"
         )
 
-        if !EventTapManager.shared.isAccessibilityTrusted {
-            SettingsWindowController.shared.showWindow()
-        }
+        SettingsWindowController.shared.showWindow()
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        CutPasteManager.shared.clearCut(showHUD: false)
+    }
+
+    private func setupApplicationMenu() {
+        let main = NSMenu()
+        let root = NSMenuItem()
+        let menu = NSMenu(title: "DeskSide")
+        let about = NSMenuItem(title: "关于 DeskSide", action: #selector(openSettings(_:)), keyEquivalent: "")
+        about.target = self
+        menu.addItem(about)
+        let settings = NSMenuItem(title: "设置与关于…", action: #selector(openSettings(_:)), keyEquivalent: ",")
+        settings.target = self
+        menu.addItem(settings)
+        menu.addItem(.separator())
+        let hide = NSMenuItem(title: "隐藏 DeskSide", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        menu.addItem(hide)
+        let quit = NSMenuItem(title: "退出 DeskSide", action: #selector(quitApp(_:)), keyEquivalent: "q")
+        quit.target = self
+        menu.addItem(quit)
+        root.submenu = menu
+        main.addItem(root)
+        let windowRoot = NSMenuItem()
+        let windowMenu = NSMenu(title: "窗口")
+        windowMenu.addItem(withTitle: "关闭窗口", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        windowMenu.addItem(withTitle: "最小化", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        windowRoot.submenu = windowMenu
+        main.addItem(windowRoot)
+        NSApp.mainMenu = main
+        NSApp.windowsMenu = windowMenu
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -47,6 +80,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
+        HiddenFilesManager.shared.refreshFromSystem()
         // Clicking the Dock icon activates the app — ensure the Settings panel opens
         if !SettingsWindowController.shared.isWindowVisible {
             SettingsWindowController.shared.showWindow()
@@ -79,7 +113,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             button.target = self
             button.action = #selector(handleStatusBarButtonClicked(_:))
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
-            button.toolTip = "点击打开 BoFinder 设置面板（右键打开快捷菜单）"
+            button.toolTip = "点击打开 DeskSide 设置面板（右键打开快捷菜单）"
         }
         updateStatusItemAppearance()
     }
@@ -103,7 +137,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let logo = menuBarLogoImage {
             button.image = logo
         } else {
-            let fallback = NSImage(systemSymbolName: "doc.on.clipboard", accessibilityDescription: "BoFinder")
+            let fallback = NSImage(systemSymbolName: "doc.on.clipboard", accessibilityDescription: "DeskSide")
             fallback?.isTemplate = true
             button.image = fallback
         }
@@ -168,8 +202,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // Header status
         let headerTitle = eventTap.isAccessibilityTrusted
-            ? "BoFinder · 运行中"
-            : "BoFinder · 需开启辅助功能权限"
+            ? "DeskSide · 运行中"
+            : "DeskSide · 需开启辅助功能权限"
         let headerItem = NSMenuItem(title: headerTitle, action: nil, keyEquivalent: "")
         headerItem.isEnabled = false
         menu.addItem(headerItem)
@@ -303,6 +337,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         // Quick Toggles
+        let hiddenFiles = HiddenFilesManager.shared
+        hiddenFiles.refreshFromSystem()
+        let hiddenTitle = state.config.enableHiddenFilesShortcut
+            ? "显示 Finder 隐藏文件 (\(state.config.hiddenFilesShortcut.displayString))"
+            : "显示 Finder 隐藏文件"
+        let toggleHiddenItem = NSMenuItem(
+            title: hiddenTitle,
+            action: #selector(toggleFinderHiddenFiles(_:)),
+            keyEquivalent: ""
+        )
+        toggleHiddenItem.target = self
+        toggleHiddenItem.state = hiddenFiles.isShowingHiddenFiles ? .on : .off
+        menu.addItem(toggleHiddenItem)
+
         let toggleCutKey = NSMenuItem(
             title: "启用 Finder ⌘+X 剪切与 ⌘+V 粘贴",
             action: #selector(toggleCutPasteKeybindings(_:)),
@@ -313,7 +361,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(toggleCutKey)
 
         let fixConflictItem = NSMenuItem(
-            title: "一键优先启用 BoFinder 右键扩展 (解决扩展冲突)",
+            title: "一键优先启用 DeskSide 右键扩展 (解决扩展冲突)",
             action: #selector(prioritizeFinderExtension(_:)),
             keyEquivalent: ""
         )
@@ -323,8 +371,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
+        let openItem = NSMenuItem(title: "打开 DeskSide", action: #selector(openMainWindow(_:)), keyEquivalent: "")
+        openItem.target = self
+        menu.addItem(openItem)
+
         let settingsItem = NSMenuItem(
-            title: "设置与扩展诊断...",
+            title: "设置与关于…",
             action: #selector(openSettings(_:)),
             keyEquivalent: ","
         )
@@ -332,7 +384,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(settingsItem)
 
         let quitItem = NSMenuItem(
-            title: "退出 BoFinder",
+            title: "退出 DeskSide",
             action: #selector(quitApp(_:)),
             keyEquivalent: "q"
         )
@@ -399,6 +451,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         )
     }
 
+    @objc private func toggleFinderHiddenFiles(_ sender: Any?) {
+        HiddenFilesManager.shared.toggleFromUI()
+    }
+
     @objc private func toggleCutPasteKeybindings(_ sender: Any?) {
         CutPasteManager.shared.updateConfig { cfg in
             cfg.enableCutAndPasteKeybindings.toggle()
@@ -406,16 +462,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func prioritizeFinderExtension(_ sender: Any?) {
-        FinderExtensionDoctor.shared.prioritizeBoFinderExtension()
+        guard FinderExtensionDoctor.shared.prioritizeBoFinderExtension() else { return }
         HUDWindowController.shared.show(
-            title: "已优先启用 BoFinder 右键扩展",
-            subtitle: "可在 Finder 中直接右键使用",
+            title: "已请求优先启用 DeskSide 右键扩展",
+            subtitle: "可在权限与诊断中检查扩展状态",
             symbolName: "checkmark.seal.fill"
         )
     }
 
-    @objc private func openSettings(_ sender: Any?) {
+    @objc private func openMainWindow(_ sender: Any?) {
         SettingsWindowController.shared.showWindow()
+    }
+
+    @objc private func openSettings(_ sender: Any?) {
+        SettingsWindowController.shared.showWindow(page: "settings")
     }
 
     @objc private func quitApp(_ sender: Any?) {

@@ -19,13 +19,6 @@ final class EventTapManager: ObservableObject {
     func checkPermissionAndStartIfPossible(promptIfNeeded: Bool = false) {
         var trusted = AXIsProcessTrusted()
         if !trusted && promptIfNeeded {
-            // Clear any stale CDHash entry from previous ad-hoc builds before prompting
-            let resetProc = Process()
-            resetProc.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
-            resetProc.arguments = ["reset", "Accessibility", "com.bofinder.app"]
-            try? resetProc.run()
-            resetProc.waitUntilExit()
-
             let options: NSDictionary = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as NSString: true]
             trusted = AXIsProcessTrustedWithOptions(options)
         }
@@ -99,6 +92,14 @@ final class EventTapManager: ObservableObject {
 
         let flags = event.flags.intersection([.maskCommand, .maskAlternate, .maskControl, .maskShift])
 
+        // Dock clicks do not necessarily change the frontmost app. Check the actual
+        // hit element before reading Finder's selection or intercepting a mouse click.
+        if type == .rightMouseDown || (type == .leftMouseDown && flags == .maskControl) {
+            guard FinderSelectionHelper.isFinderElement(at: event.location, finderPID: frontApp.processIdentifier) else {
+                return Unmanaged.passUnretained(event)
+            }
+        }
+
         // Option + Right-Click in Finder: pop up BoFinder quick menu directly
         if type == .rightMouseDown && flags == .maskAlternate {
             DispatchQueue.main.async {
@@ -134,6 +135,11 @@ final class EventTapManager: ObservableObject {
             return Unmanaged.passUnretained(event)
         }
 
+        // Allow DeskSide's own synthetic ⌘+⇧+. events to pass straight through to Finder
+        if event.getIntegerValueField(.eventSourceUserData) == HiddenFilesManager.syntheticEventTag {
+            return Unmanaged.passUnretained(event)
+        }
+
         let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
 
         // Control + Option + C (keyCode 8 = C) in Finder: pop up BoFinder quick menu
@@ -145,12 +151,10 @@ final class EventTapManager: ObservableObject {
         }
 
         let manager = CutPasteManager.shared
-        guard manager.state.config.enableCutAndPasteKeybindings else {
-            return Unmanaged.passUnretained(event)
-        }
+        let config = manager.state.config
 
         // 1. Esc (keyCode 53) without modifiers: cancel active cut mode
-        if keyCode == 53 && flags.isEmpty {
+        if config.enableCutAndPasteKeybindings && keyCode == 53 && flags.isEmpty {
             if manager.isValidCutActive() {
                 DispatchQueue.main.async {
                     manager.clearCut(showHUD: true)
@@ -159,7 +163,50 @@ final class EventTapManager: ObservableObject {
             return Unmanaged.passUnretained(event)
         }
 
-        // 2. Check if user is editing text in Finder (renaming a file, search bar, Go to Folder sheet, etc.)
+        // 2. Toggle Hidden Files shortcut in Finder
+        let matchesHiddenShortcut = config.enableHiddenFilesShortcut && config.hiddenFilesShortcut.matches(
+            keyCode: Int(keyCode),
+            command: flags.contains(.maskCommand),
+            shift: flags.contains(.maskShift),
+            option: flags.contains(.maskAlternate),
+            control: flags.contains(.maskControl)
+        )
+        let isNativeHiddenShortcut = (keyCode == 47 && flags == [.maskCommand, .maskShift])
+
+        if matchesHiddenShortcut {
+            guard !isFinderEditingText(pid: frontApp.processIdentifier) else {
+                return Unmanaged.passUnretained(event)
+            }
+            let isAutorepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
+            if isAutorepeat {
+                return nil
+            }
+            if config.hiddenFilesShortcut.isNativeFinderHiddenFilesShortcut {
+                DispatchQueue.main.async {
+                    HiddenFilesManager.shared.recordFinderNativeToggle(showHUD: true)
+                }
+                return Unmanaged.passUnretained(event)
+            } else {
+                DispatchQueue.main.async {
+                    HiddenFilesManager.shared.triggerShortcutInFrontmostFinder()
+                }
+                return nil
+            }
+        } else if isNativeHiddenShortcut {
+            if !isFinderEditingText(pid: frontApp.processIdentifier),
+               event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
+                DispatchQueue.main.async {
+                    HiddenFilesManager.shared.recordFinderNativeToggle(showHUD: false)
+                }
+            }
+            return Unmanaged.passUnretained(event)
+        }
+
+        guard config.enableCutAndPasteKeybindings else {
+            return Unmanaged.passUnretained(event)
+        }
+
+        // 3. Check if user is editing text in Finder (renaming a file, search bar, Go to Folder sheet, etc.)
         if isFinderEditingText(pid: frontApp.processIdentifier) {
             return Unmanaged.passUnretained(event)
         }

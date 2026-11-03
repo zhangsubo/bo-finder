@@ -100,7 +100,8 @@ final class FinderExtensionDoctor: ObservableObject {
     }
 
     /// Disables conflicting global FinderSync extensions (like WPS, CleanMyMac, iRightMouse) while keeping cloud drive sidebar extensions intact.
-    func prioritizeBoFinderExtension() {
+    @discardableResult
+    func prioritizeBoFinderExtension() -> Bool {
         let globalConflictKeywords = [
             "CleanMyMac",
             "WPSFinderMenu",
@@ -109,16 +110,24 @@ final class FinderExtensionDoctor: ObservableObject {
             "ezip",
             "DingTalk"
         ]
-        let current = plugins
-        for plugin in current where !plugin.isBoFinder && plugin.isEnabled {
-            let shouldDisable = globalConflictKeywords.contains { keyword in
+        let conflicts = plugins.filter { plugin in
+            !plugin.isBoFinder && plugin.isEnabled && globalConflictKeywords.contains { keyword in
                 plugin.id.localizedCaseInsensitiveContains(keyword) || plugin.path.localizedCaseInsensitiveContains(keyword)
             }
-            if shouldDisable {
-                _ = runCommand("/usr/bin/pluginkit", args: ["-e", "ignore", "-i", plugin.id])
-            }
+        }
+        if !conflicts.isEmpty {
+            let alert = NSAlert()
+            alert.messageText = "优先使用 DeskSide 文件工具？"
+            alert.informativeText = "将停用以下 Finder 扩展，可在扩展列表中重新开启：\n\n" + conflicts.map { "• \($0.displayName)" }.joined(separator: "\n")
+            alert.addButton(withTitle: "停用冲突扩展并继续")
+            alert.addButton(withTitle: "取消")
+            guard alert.runModal() == .alertFirstButtonReturn else { return false }
+        }
+        for plugin in conflicts {
+            _ = runCommand("/usr/bin/pluginkit", args: ["-e", "ignore", "-i", plugin.id])
         }
         registerAndEnableOurExtension()
+        return true
     }
 
     @discardableResult

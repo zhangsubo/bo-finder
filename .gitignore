@@ -3,6 +3,8 @@ build/
 *.app
 *.appex
 *.dSYM
+__pycache__/
+*.pyc
 
 # macOS system files
 .DS_Store

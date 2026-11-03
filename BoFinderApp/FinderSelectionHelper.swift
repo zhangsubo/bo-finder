@@ -2,6 +2,18 @@ import Cocoa
 import ApplicationServices
 
 enum FinderSelectionHelper {
+    /// Use system-wide hit testing so overlays such as Dock are not mistaken for Finder behind them.
+    static func isFinderElement(at cgPoint: CGPoint, finderPID: pid_t) -> Bool {
+        var hitElement: AXUIElement?
+        guard AXUIElementCopyElementAtPosition(
+            AXUIElementCreateSystemWide(), Float(cgPoint.x), Float(cgPoint.y), &hitElement
+        ) == .success, let hitElement = hitElement else {
+            return false
+        }
+        var ownerPID: pid_t = 0
+        return AXUIElementGetPid(hitElement, &ownerPID) == .success && ownerPID == finderPID
+    }
+
     /// Checks whether a given URL is inside iCloud Drive or CloudStorage where macOS 14+ disables third-party FinderSync extensions.
     static func isCloudFolder(_ url: URL) -> Bool {
         let path = url.path

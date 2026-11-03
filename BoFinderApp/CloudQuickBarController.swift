@@ -62,7 +62,7 @@ final class CloudQuickBarController {
         rowStack.translatesAutoresizingMaskIntoConstraints = false
 
         // Badge icon + label
-        let badgeLabel = NSTextField(labelWithString: "BoFinder")
+        let badgeLabel = NSTextField(labelWithString: "DeskSide")
         badgeLabel.font = NSFont.systemFont(ofSize: 11, weight: .bold)
         badgeLabel.textColor = .secondaryLabelColor
         rowStack.addArrangedSubview(badgeLabel)

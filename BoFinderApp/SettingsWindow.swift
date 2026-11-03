@@ -5,42 +5,180 @@ struct SettingsView: View {
     @ObservedObject var cutPasteManager = CutPasteManager.shared
     @ObservedObject var eventTapManager = EventTapManager.shared
     @ObservedObject var extensionDoctor = FinderExtensionDoctor.shared
+    @ObservedObject var hiddenFilesManager = HiddenFilesManager.shared
+    @StateObject private var shortcutRecorder = ShortcutRecorderController()
 
     @State private var selectedTab: Int = 0
 
-    private let sampleURL = URL(fileURLWithPath: "\(PathFormatter.realHomeDirectory())/Documents/项目资料/BoFinder 测试文件 (1).pdf")
+    private let sampleURL = URL(fileURLWithPath: "\(PathFormatter.realHomeDirectory())/Documents/项目资料/DeskSide 测试文件 (1).pdf")
+
+    @AppStorage("deskside.selectedPage") private var selectedPage = "files"
+    @AppStorage("deskside.appearance") private var appearance = "system"
 
     var body: some View {
-        TabView(selection: $selectedTab) {
-            copyPathTab
-                .tabItem {
-                    Label("复制路径", systemImage: "doc.on.doc")
+        HStack(spacing: 0) {
+            sidebar
+            Divider()
+            VStack(spacing: 0) {
+                HStack {
+                    Text(pageTitle).font(.headline)
+                    Spacer()
+                    if selectedPage == "files" {
+                        Label("文件工具", systemImage: "folder").foregroundColor(.secondary)
+                    }
                 }
-                .tag(0)
-
-            terminalAndOrcaTab
-                .tabItem {
-                    Label("终端与 Orca", systemImage: "terminal")
+                .padding(.horizontal, 28).frame(height: 48)
+                Divider()
+                Group {
+                    switch selectedPage {
+                    case "gateway":
+                        comingSoon(title: "安全网关", symbol: "checkmark.shield", detail: "通过手机确认 Agent 的敏感操作。", note: "让每一次授权，都由你决定。")
+                    case "meetings":
+                        comingSoon(title: "会议助手", symbol: "mic", detail: "自动记录线上与线下讨论重点。", note: "专注倾听，纪要交给我们。")
+                    case "settings": globalSettings
+                    default: fileTools
+                    }
                 }
-                .tag(1)
-
-            cutPasteTab
-                .tabItem {
-                    Label("剪切与粘贴", systemImage: "scissors")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                Divider()
+                HStack {
+                    Text("设置自动保存到这台 Mac").font(.caption)
+                    Spacer()
+                    Text("DeskSide").font(.caption)
                 }
-                .tag(2)
-
-            permissionsAndDoctorTab
-                .tabItem {
-                    Label("通用设置", systemImage: "gearshape.fill")
-                }
-                .tag(3)
+                .foregroundColor(.secondary).padding(.horizontal, 28).frame(height: 30)
+            }
+            .background(Color(nsColor: .windowBackgroundColor))
         }
-        .padding(20)
-        .frame(width: 620, height: 540)
+        .frame(minWidth: 860, minHeight: 620)
         .onAppear {
-            extensionDoctor.refreshPlugins()
-            eventTapManager.checkPermissionAndStartIfPossible(promptIfNeeded: false)
+            if !["files", "gateway", "meetings", "settings"].contains(selectedPage) { selectedPage = "files" }
+            refreshStatus()
+            applyAppearance()
+        }
+        .onDisappear { shortcutRecorder.stopRecording() }
+        .onChange(of: selectedPage) { _ in shortcutRecorder.stopRecording() }
+        .onChange(of: selectedTab) { _ in shortcutRecorder.stopRecording() }
+        .onChange(of: appearance) { _ in applyAppearance() }
+    }
+
+    private var pageTitle: String {
+        switch selectedPage {
+        case "gateway": return "安全网关"
+        case "meetings": return "会议助手"
+        case "settings": return "设置与关于"
+        default: return "文件工具"
+        }
+    }
+
+    private var sidebar: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                appLogo(size: 44)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("DeskSide").font(.system(size: 18, weight: .semibold))
+                    Text("桌边，随手好用。").font(.caption2).foregroundColor(.secondary)
+                }
+            }.padding(.vertical, 24).padding(.horizontal, 8)
+            Text("我的工具").font(.caption).foregroundColor(.secondary).padding(.horizontal, 10).padding(.bottom, 5)
+            sidebarButton("文件工具", symbol: "folder", page: "files")
+            sidebarButton("安全网关", symbol: "checkmark.shield", page: "gateway", upcoming: true)
+            sidebarButton("会议助手", symbol: "mic", page: "meetings", upcoming: true)
+            Spacer(minLength: 20)
+            Divider().padding(.bottom, 6)
+            sidebarButton("设置与关于", symbol: "gearshape", page: "settings")
+            Label("运行在这台 Mac 上", systemImage: "desktopcomputer")
+                .font(.caption2).foregroundColor(.secondary).padding(10)
+        }
+        .padding(.horizontal, 12).padding(.bottom, 8)
+        .frame(width: 212)
+        .frame(maxHeight: .infinity)
+        .background(.regularMaterial)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("全局侧边栏")
+    }
+
+    private func sidebarButton(_ title: String, symbol: String, page: String, upcoming: Bool = false) -> some View {
+        Button {
+            selectedPage = page
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: symbol).frame(width: 18).foregroundColor(.accentColor)
+                Text(title).fontWeight(selectedPage == page ? .semibold : .regular)
+                Spacer(minLength: 0)
+                if upcoming { Text("即将推出").font(.system(size: 9)).foregroundColor(.secondary) }
+            }
+            .padding(.horizontal, 10).padding(.vertical, 10)
+            .contentShape(Rectangle())
+            .background(selectedPage == page ? Color.accentColor.opacity(0.14) : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selectedPage == page ? .isSelected : [])
+    }
+
+    @ViewBuilder private func appLogo(size: CGFloat) -> some View {
+        if let url = Bundle.main.url(forResource: "AppLogo", withExtension: "png"), let image = NSImage(contentsOf: url) {
+            Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
+                .frame(width: size, height: size)
+                .clipShape(RoundedRectangle(cornerRadius: size * 0.23))
+                .accessibilityLabel("DeskSide")
+        }
+    }
+
+    private var fileTools: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("文件工具").font(.system(size: 25, weight: .bold))
+                Text("让 Finder 里的每一步，都更顺手。").foregroundColor(.secondary)
+            }
+            Picker("文件工具分类", selection: $selectedTab) {
+                Text("路径复制").tag(0)
+                Text("剪切与移动").tag(1)
+                Text("快捷打开").tag(2)
+                Text("显示与增强").tag(3)
+                Text("权限与诊断").tag(4)
+            }
+            .pickerStyle(.segmented).labelsHidden()
+            Group {
+                switch selectedTab {
+                case 1: ScrollView { cutPasteTab }
+                case 2: terminalAndOrcaTab
+                case 3: displayAndEnhanceTab
+                case 4: permissionsAndDoctorTab
+                default: copyPathTab
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+        .padding(26)
+    }
+
+    private func comingSoon(title: String, symbol: String, detail: String, note: String) -> some View {
+        VStack(spacing: 18) {
+            Image(systemName: symbol).font(.system(size: 34, weight: .light))
+                .foregroundColor(.secondary).frame(width: 76, height: 76)
+                .background(Color.secondary.opacity(0.08)).clipShape(RoundedRectangle(cornerRadius: 18))
+            Text(title).font(.system(size: 25, weight: .semibold))
+            Text(detail).foregroundColor(.secondary)
+            Text("即将推出").font(.caption).foregroundColor(.secondary)
+                .padding(.horizontal, 12).padding(.vertical, 6)
+                .overlay(Capsule().stroke(Color.secondary.opacity(0.25)))
+            Text(note).font(.caption).foregroundColor(.secondary).padding(.top, 8)
+        }.frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func refreshStatus() {
+        extensionDoctor.refreshPlugins()
+        eventTapManager.checkPermissionAndStartIfPossible(promptIfNeeded: false)
+        hiddenFilesManager.refreshFromSystem()
+    }
+
+    private func applyAppearance() {
+        switch appearance {
+        case "light": NSApp.appearance = NSAppearance(named: .aqua)
+        case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
+        default: NSApp.appearance = nil
         }
     }
 
@@ -49,13 +187,14 @@ struct SettingsView: View {
     private var copyPathTab: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                GroupBox(label: Label("右键菜单展示方式", systemImage: "ContextualMenuItem")) {
+                GroupBox(label: Label("右键菜单展示方式", systemImage: "cursorarrow")) {
                     VStack(alignment: .leading, spacing: 10) {
                         Toggle("在右键菜单顶部显示置顶快捷栏（位于「打开/复制」正上方，免下滑鼠标，且支持 iCloud 云盘）", isOn: Binding(
                             get: { cutPasteManager.state.config.showTopQuickBarOnRightClick },
                             set: { val in cutPasteManager.updateConfig { $0.showTopQuickBarOnRightClick = val } }
                         ))
                         .fontWeight(.semibold)
+
 
                         Divider()
 
@@ -264,7 +403,7 @@ struct SettingsView: View {
                     ))
                     .fontWeight(.medium)
 
-                    Text("• 在 Finder 中选中文件按 ⌘+X 进入剪切状态，在目标目录按 ⌘+V 自动触发原生移动（等同于 ⌥+⌘+V）。\n• 按 Esc 键或重新按 ⌘+C 可随时取消剪切状态。\n• 智能识别重命名文件、搜索框输入等文本编辑状态，不影响文字剪切粘贴。")
+                    Text("• 在 Finder 中选中文件按 ⌘+X 进入剪切状态，在目标目录按 ⌘+V 直接执行文件移动。\n• 按 Esc 键或重新按 ⌘+C 可随时取消剪切状态。\n• 智能识别重命名文件、搜索框输入等文本编辑状态，不影响文字剪切粘贴。")
                         .font(.system(size: 12))
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -295,7 +434,7 @@ struct SettingsView: View {
                     HStack {
                         Button("测试悬浮提示 (HUD)") {
                             HUDWindowController.shared.show(
-                                title: "BoFinder 运行正常",
+                                title: "DeskSide 运行正常",
                                 subtitle: "右键复制路径与 ⌘+X / ⌘+V 剪切已就绪",
                                 symbolName: "checkmark.seal.fill"
                             )
@@ -344,65 +483,202 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - Tab 4: General Settings (通用设置)
+    // MARK: - Tab 4: Display & Enhancements (显示与增强)
 
-    private var permissionsAndDoctorTab: some View {
+    private var displayAndEnhanceTab: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                GroupBox(label: Label("1. 启动与外观设置（开机自启 / Dock / 菜单栏）", systemImage: "app.badge")) {
-                    HStack(spacing: 14) {
-                        if let logoURL = Bundle.main.url(forResource: "AppLogo", withExtension: "png"),
-                           let nsImg = NSImage(contentsOf: logoURL) {
-                            Image(nsImage: nsImg)
-                                .resizable()
-                                .aspectRatio(contentMode: .fill)
-                                .frame(width: 48, height: 48)
-                                .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
-                                .shadow(color: .black.opacity(0.15), radius: 3, x: 0, y: 1)
-                        }
-
-                        VStack(alignment: .leading, spacing: 8) {
-                            Toggle("开机自动启动 BoFinder", isOn: Binding(
-                                get: { cutPasteManager.state.config.launchAtLogin },
-                                set: { val in
-                                    cutPasteManager.updateConfig { $0.launchAtLogin = val }
-                                    LaunchAtLoginManager.shared.setEnabled(val)
+                GroupBox(label: Label("显示隐藏文件（以 . 开头的系统与隐藏文件）", systemImage: "eye")) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(spacing: 10) {
+                            Toggle("在 Finder 中显示隐藏文件（如 .git、.env、.zshrc 等）", isOn: Binding(
+                                get: { hiddenFilesManager.isShowingHiddenFiles },
+                                set: { visible in
+                                    hiddenFilesManager.setHiddenFilesVisible(visible, showHUD: true)
                                 }
                             ))
                             .fontWeight(.semibold)
 
-                            Toggle("在 Dock 栏显示应用图标", isOn: Binding(
-                                get: { cutPasteManager.state.config.showDockIcon },
-                                set: { val in cutPasteManager.updateConfig { $0.showDockIcon = val } }
-                            ))
-                            .fontWeight(.semibold)
+                            Spacer()
 
-                            Text("• 左键点击 Dock 图标或顶部菜单栏 Logo，可直接打开此设置面板。\n• 右键（或 ⌃+左键）点击顶部菜单栏 Logo，可弹出快捷操作菜单。")
+                            if hiddenFilesManager.isShowingHiddenFiles {
+                                Text("当前已显示")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundColor(.accentColor)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 3)
+                                    .background(Color.accentColor.opacity(0.12))
+                                    .cornerRadius(4)
+                            } else {
+                                Text("当前已隐藏")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.secondary)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 3)
+                                    .background(Color.gray.opacity(0.12))
+                                    .cornerRadius(4)
+                            }
+                        }
+
+                        Text("• 开启后，Finder 窗口与桌面将显示文件名以「.」开头的隐藏文件及系统隐藏目录（如 .git、.ssh、.DS_Store、~/Library 等）。\n• 也可通过顶部状态栏图标右键菜单随时查看与切换状态。")
+                            .font(.system(size: 12))
+                            .foregroundColor(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        HStack(spacing: 10) {
+                            Button("重新同步并刷新 Finder") {
+                                hiddenFilesManager.forceSyncFinder()
+                            }
+                            .controlSize(.small)
+
+                            Text("若 Finder 窗口临时状态不一致，可点击强制同步。")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
                         }
-
-                        Spacer()
-
-                        Button("退出 BoFinder") {
-                            NSApp.terminate(nil)
-                        }
+                        .padding(.top, 2)
                     }
                     .padding(10)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
-                GroupBox(label: Label("2. 辅助功能权限（用于接管 Finder 中的 ⌘+X / ⌘+V 快捷键）", systemImage: "hand.raised.fill")) {
+                GroupBox(label: Label("快捷键快速开关（仅在 Finder 前台生效）", systemImage: "command")) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Toggle("启用在 Finder 中按快捷键快速打开 / 关闭隐藏文件显示", isOn: Binding(
+                            get: { cutPasteManager.state.config.enableHiddenFilesShortcut },
+                            set: { val in
+                                shortcutRecorder.stopRecording()
+                                cutPasteManager.updateConfig { $0.enableHiddenFilesShortcut = val }
+                            }
+                        ))
+                        .fontWeight(.medium)
+
+                        Divider()
+
+                        HStack(spacing: 10) {
+                            Text("当前快捷键：")
+                                .fontWeight(.medium)
+
+                            let currentShortcut = cutPasteManager.state.config.hiddenFilesShortcut
+                            Text(shortcutRecorder.isRecording ? "请按下快捷键组合…" : currentShortcut.displayString)
+                                .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                                .foregroundColor(shortcutRecorder.isRecording ? .accentColor : .primary)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .fill(shortcutRecorder.isRecording ? Color.accentColor.opacity(0.14) : Color.secondary.opacity(0.12))
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .stroke(shortcutRecorder.isRecording ? Color.accentColor : Color.secondary.opacity(0.25), lineWidth: 1)
+                                )
+
+                            if shortcutRecorder.isRecording {
+                                Button("取消 (Esc)") {
+                                    shortcutRecorder.stopRecording()
+                                }
+                            } else {
+                                Button("录制快捷键…") {
+                                    shortcutRecorder.startRecording { recorded in
+                                        cutPasteManager.updateConfig { cfg in
+                                            cfg.hiddenFilesShortcut = recorded
+                                            cfg.enableHiddenFilesShortcut = true
+                                        }
+                                    }
+                                }
+                            }
+
+                            if currentShortcut != .defaultHiddenFiles {
+                                Button("恢复默认") {
+                                    shortcutRecorder.stopRecording()
+                                    cutPasteManager.updateConfig { $0.hiddenFilesShortcut = .defaultHiddenFiles }
+                                }
+                                .controlSize(.small)
+                            }
+
+                            Spacer()
+                        }
+
+                        HStack(spacing: 8) {
+                            Text("一键预设：")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+
+                            shortcutPresetButton(title: "⌘+⇧+.（系统默认）", shortcut: .defaultHiddenFiles)
+                            shortcutPresetButton(title: "⌃+H", shortcut: .presetControlH)
+                            shortcutPresetButton(title: "⌥+.", shortcut: .presetOptionPeriod)
+                        }
+
+                        if let validationMsg = shortcutRecorder.validationMessage {
+                            HStack(spacing: 6) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundColor(.orange)
+                                Text(validationMsg)
+                                    .font(.caption)
+                                    .foregroundColor(.orange)
+                            }
+                        }
+
+                        if !eventTapManager.isAccessibilityTrusted {
+                            HStack(spacing: 8) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundColor(.orange)
+                                Text("快捷键监听需要开启「辅助功能」权限后方可在 Finder 中触发。")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Spacer()
+                                Button("前往授权") {
+                                    selectedTab = 4
+                                    eventTapManager.checkPermissionAndStartIfPossible(promptIfNeeded: true)
+                                }
+                                .controlSize(.small)
+                            }
+                            .padding(8)
+                            .background(Color.orange.opacity(0.08))
+                            .cornerRadius(6)
+                        }
+
+                        Text("• 仅当 Finder 处于前台时触发，不会影响其他应用的快捷键。\n• 在 Finder 中按快捷键采用原生零闪烁即时切换，不中断文件复制，同时自动持久化设置并弹出 HUD 提示。\n• 智能识别文件重命名、搜索框与路径跳转输入状态，不影响正常文字输入。")
+                            .font(.system(size: 12))
+                            .foregroundColor(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+    }
+
+    private func shortcutPresetButton(title: String, shortcut: KeyShortcut) -> some View {
+        let isCurrent = cutPasteManager.state.config.hiddenFilesShortcut == shortcut
+        return Button(title) {
+            shortcutRecorder.stopRecording()
+            cutPasteManager.updateConfig { cfg in
+                cfg.hiddenFilesShortcut = shortcut
+                cfg.enableHiddenFilesShortcut = true
+            }
+        }
+        .controlSize(.small)
+        .buttonStyle(.bordered)
+        .tint(isCurrent ? .accentColor : nil)
+    }
+
+    // MARK: - Tab 5: Permissions & Doctor (权限与诊断)
+
+    private var permissionsAndDoctorTab: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                GroupBox(label: Label("辅助功能权限（用于支持 Finder 剪切粘贴与隐藏文件快捷键）", systemImage: "hand.raised.fill")) {
                     HStack(spacing: 12) {
                         Image(systemName: eventTapManager.isAccessibilityTrusted ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                             .foregroundColor(eventTapManager.isAccessibilityTrusted ? .green : .orange)
                             .font(.title2)
 
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(eventTapManager.isAccessibilityTrusted ? "辅助功能权限已开启（⌘+X / ⌘+V 监听运行中）" : "需要开启「辅助功能」权限以支持 ⌘+X / ⌘+V")
+                            Text(eventTapManager.isAccessibilityTrusted ? (eventTapManager.isEventTapRunning ? "辅助功能已授权，快捷键监听运行中" : "辅助功能已授权，快捷键监听尚未启动") : "需要开启「辅助功能」权限以支持 Finder 快捷键")
                                 .fontWeight(.semibold)
-                            Text("在「系统设置 -> 隐私与安全性 -> 辅助功能」中勾选 BoFinder。")
+                            Text("在「系统设置 -> 隐私与安全性 -> 辅助功能」中勾选 DeskSide（旧版本可能仍显示 BoFinder）。")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -424,7 +700,7 @@ struct SettingsView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
-                GroupBox(label: Label("3. Finder 右键菜单扩展与冲突管理", systemImage: "puzzlepiece.extension.fill")) {
+                GroupBox(label: Label("Finder 右键菜单扩展与冲突管理", systemImage: "puzzlepiece.extension.fill")) {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack(spacing: 10) {
                             Image(systemName: extensionDoctor.isBoFinderExtensionEnabled ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
@@ -432,7 +708,7 @@ struct SettingsView: View {
                                 .font(.title2)
 
                             VStack(alignment: .leading, spacing: 3) {
-                                Text(extensionDoctor.isBoFinderExtensionEnabled ? "BoFinder 右键扩展已启用" : "BoFinder 右键扩展未启用")
+                                Text(extensionDoctor.isBoFinderExtensionEnabled ? "DeskSide 右键扩展已启用" : "DeskSide 右键扩展未启用")
                                     .fontWeight(.semibold)
                                 Text("提示：macOS Finder 同一目录仅允许一个 FinderSync 扩展显示右键菜单。如果 WPS、百度网盘、CleanMyMac 等占用了根目录，可点击下方「一键设为优先右键扩展」。")
                                     .font(.caption)
@@ -443,10 +719,10 @@ struct SettingsView: View {
 
                         HStack(spacing: 10) {
                             Button("一键设为优先右键扩展（解决冲突）") {
-                                extensionDoctor.prioritizeBoFinderExtension()
+                                guard extensionDoctor.prioritizeBoFinderExtension() else { return }
                                 HUDWindowController.shared.show(
-                                    title: "已优先启用 BoFinder 右键扩展",
-                                    subtitle: "已关闭冲突的第三方 Finder 扩展",
+                                    title: "已请求优先启用 DeskSide 右键扩展",
+                                    subtitle: "请在下方列表检查扩展状态",
                                     symbolName: "sparkles"
                                 )
                             }
@@ -508,6 +784,78 @@ struct SettingsView: View {
         }
     }
 
+    private var globalSettings: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                Text("设置与关于").font(.system(size: 25, weight: .bold))
+                Text("让桌边按照你的习惯工作。").foregroundColor(.secondary)
+                GroupBox(label: Label("窗口与常驻", systemImage: "app.badge")) {
+                    HStack(spacing: 14) {
+                        if let logoURL = Bundle.main.url(forResource: "AppLogo", withExtension: "png"),
+                           let nsImg = NSImage(contentsOf: logoURL) {
+                            Image(nsImage: nsImg)
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                                .frame(width: 48, height: 48)
+                                .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                                .shadow(color: .black.opacity(0.15), radius: 3, x: 0, y: 1)
+                        }
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Toggle("开机自动启动 DeskSide", isOn: Binding(
+                                get: { cutPasteManager.state.config.launchAtLogin },
+                                set: { val in
+                                    cutPasteManager.updateConfig { $0.launchAtLogin = val }
+                                    LaunchAtLoginManager.shared.setEnabled(val)
+                                }
+                            ))
+                            .fontWeight(.semibold)
+
+                            Toggle("在 Dock 栏显示应用图标", isOn: Binding(
+                                get: { cutPasteManager.state.config.showDockIcon },
+                                set: { val in cutPasteManager.updateConfig { $0.showDockIcon = val } }
+                            ))
+                            .fontWeight(.semibold)
+
+                            Text("• 左键点击 Dock 图标或顶部菜单栏 Logo，可直接打开此设置面板。\n• 右键（或 ⌃+左键）点击顶部菜单栏 Logo，可弹出快捷操作菜单。")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        Spacer()
+
+                        Button("退出 DeskSide") {
+                            NSApp.terminate(nil)
+                        }
+                    }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+
+                GroupBox("外观") {
+                    Picker("界面外观", selection: $appearance) {
+                        Text("跟随系统").tag("system")
+                        Text("浅色").tag("light")
+                        Text("深色").tag("dark")
+                    }.padding(12)
+                }
+                HStack(spacing: 18) {
+                    appLogo(size: 64)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("桌边 · DeskSide").font(.title2).fontWeight(.semibold)
+                        Text("需要的时候，就在手边。").foregroundColor(.secondary)
+                        Text("版本 \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.1.0")")
+                            .font(.caption).foregroundColor(.secondary)
+                    }
+                }.padding(.vertical, 12)
+                Text("文件工具承接 BoFinder，原有功能与设置继续保留。关闭窗口后，DeskSide 仍在菜单栏运行。")
+                    .font(.caption).foregroundColor(.secondary)
+            }.padding(26).frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
     private func restoreFinderSidebar() {
         let script = """
         tell application "Finder"
@@ -528,6 +876,84 @@ struct SettingsView: View {
     }
 }
 
+final class ShortcutRecorderController: ObservableObject {
+    @Published private(set) var isRecording: Bool = false
+    @Published var validationMessage: String?
+
+    private var keyMonitor: Any?
+    private var resignObserver: NSObjectProtocol?
+
+    deinit {
+        cleanupMonitors()
+    }
+
+    func startRecording(onCapture: @escaping (KeyShortcut) -> Void) {
+        cleanupMonitors()
+        validationMessage = nil
+        isRecording = true
+
+        resignObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didResignKeyNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.stopRecording()
+        }
+
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self = self else { return event }
+            let code = Int(event.keyCode)
+            let mods = event.modifierFlags.intersection([.command, .shift, .option, .control])
+
+            if code == 53 && mods.isEmpty {
+                self.stopRecording()
+                return nil
+            }
+
+            if KeyShortcut.isModifierKeyCode(code) {
+                return nil
+            }
+
+            let candidate = KeyShortcut(
+                keyCode: code,
+                command: mods.contains(.command),
+                shift: mods.contains(.shift),
+                option: mods.contains(.option),
+                control: mods.contains(.control)
+            )
+
+            if let errorReason = candidate.validateForFinder() {
+                self.validationMessage = errorReason
+                NSSound.beep()
+                return nil
+            }
+
+            self.validationMessage = nil
+            self.stopRecording()
+            onCapture(candidate)
+            return nil
+        }
+    }
+
+    func stopRecording() {
+        cleanupMonitors()
+        if isRecording {
+            isRecording = false
+        }
+    }
+
+    private func cleanupMonitors() {
+        if let monitor = keyMonitor {
+            NSEvent.removeMonitor(monitor)
+            keyMonitor = nil
+        }
+        if let obs = resignObserver {
+            NotificationCenter.default.removeObserver(obs)
+            resignObserver = nil
+        }
+    }
+}
+
 final class SettingsWindowController {
     static let shared = SettingsWindowController()
     private var window: NSWindow?
@@ -536,23 +962,33 @@ final class SettingsWindowController {
         return window?.isVisible == true
     }
 
-    func showWindow() {
+    func bringToFrontIfVisible() {
+        guard let existing = window, existing.isVisible else { return }
+        existing.makeKeyAndOrderFront(nil)
+    }
+
+    func showWindow(page: String? = nil) {
+        if let page { UserDefaults.standard.set(page, forKey: "deskside.selectedPage") }
         NSApp.activate(ignoringOtherApps: true)
         if let existing = window {
+            if existing.isMiniaturized { existing.deminiaturize(nil) }
             existing.makeKeyAndOrderFront(nil)
             return
         }
 
         let hostingController = NSHostingController(rootView: SettingsView())
         let win = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 620, height: 540),
-            styleMask: [.titled, .closable, .miniaturizable],
+            contentRect: NSRect(x: 0, y: 0, width: 1020, height: 730),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
-        win.title = "BoFinder 设置 — Finder 右键复制路径与原生剪切增强"
+        win.title = "桌边 · DeskSide"
+        win.minSize = NSSize(width: 860, height: 650)
         win.contentViewController = hostingController
+        win.setContentSize(NSSize(width: 1020, height: 730))
         win.center()
+        win.setFrameAutosaveName("DeskSide.MainWindow")
         win.isReleasedWhenClosed = false
         win.makeKeyAndOrderFront(nil)
         self.window = win

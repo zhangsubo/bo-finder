@@ -23,7 +23,7 @@ final class QuickPopupMenuController: NSObject {
             ? [.posix, .url, .windows, .terminal]
             : state.config.enabledFormats
 
-        let menu = NSMenu(title: "BoFinder 快捷菜单")
+        let menu = NSMenu(title: "DeskSide 快捷菜单")
 
         let headerText = !selectedURLs.isEmpty
             ? (selectedURLs.count == 1 ? "📄 \(selectedURLs[0].lastPathComponent)" : "📚 已选中 \(selectedURLs.count) 个项目")

@@ -1,5 +1,6 @@
 import Cocoa
 
+// DeskSide intentionally retains BoFinder storage and IPC names for in-place upgrades.
 public enum BoFinderIPC {
     public static let stateChangedNotification = Notification.Name("com.bofinder.ipc.stateChanged")
     public static let requestStateNotification = Notification.Name("com.bofinder.ipc.requestState")
