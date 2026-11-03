@@ -26,12 +26,16 @@ struct SettingsView: View {
                     Spacer()
                     if selectedPage == "files" {
                         Label("文件工具", systemImage: "folder").foregroundColor(.secondary)
+                    } else if selectedPage == "env" {
+                        Label("环境变量", systemImage: "terminal").foregroundColor(.secondary)
                     }
                 }
                 .padding(.horizontal, 28).frame(height: 48)
                 Divider()
                 Group {
                     switch selectedPage {
+                    case "env":
+                        EnvView()
                     case "gateway":
                         comingSoon(title: "安全网关", symbol: "checkmark.shield", detail: "通过手机确认 Agent 的敏感操作。", note: "让每一次授权，都由你决定。")
                     case "meetings":
@@ -53,7 +57,7 @@ struct SettingsView: View {
         }
         .frame(minWidth: 860, minHeight: 620)
         .onAppear {
-            if !["files", "gateway", "meetings", "settings"].contains(selectedPage) { selectedPage = "files" }
+            if !["files", "env", "gateway", "meetings", "settings"].contains(selectedPage) { selectedPage = "files" }
             refreshStatus()
             applyAppearance()
         }
@@ -65,6 +69,7 @@ struct SettingsView: View {
 
     private var pageTitle: String {
         switch selectedPage {
+        case "env": return "环境变量"
         case "gateway": return "安全网关"
         case "meetings": return "会议助手"
         case "settings": return "设置与关于"
@@ -83,8 +88,9 @@ struct SettingsView: View {
             }.padding(.vertical, 24).padding(.horizontal, 8)
             Text("我的工具").font(.caption).foregroundColor(.secondary).padding(.horizontal, 10).padding(.bottom, 5)
             sidebarButton("文件工具", symbol: "folder", page: "files")
-            sidebarButton("安全网关", symbol: "checkmark.shield", page: "gateway", upcoming: true)
+            sidebarButton("环境变量", symbol: "terminal", page: "env")
             sidebarButton("会议助手", symbol: "mic", page: "meetings")
+            sidebarButton("安全网关", symbol: "checkmark.shield", page: "gateway", upcoming: true)
             Spacer(minLength: 20)
             Divider().padding(.bottom, 6)
             sidebarButton("设置与关于", symbol: "gearshape", page: "settings")

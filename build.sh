@@ -47,6 +47,11 @@ xcrun swiftc -sdk "$SDK_PATH" -target "$TARGET" \
     "$ROOT_DIR/Tests/MeetingAppleSpeechTests.swift" -o "$BUILD_DIR/run_apple_speech_tests"
 "$BUILD_DIR/run_apple_speech_tests"
 
+xcrun swiftc -sdk "$SDK_PATH" -target "$TARGET" -framework Cocoa \
+    "$ROOT_DIR/BoFinderApp/EnvModels.swift" \
+    "$ROOT_DIR/Tests/EnvTests.swift" -o "$BUILD_DIR/run_env_tests"
+"$BUILD_DIR/run_env_tests"
+
 echo "==> [2/5] Preparing bundle directories..."
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_BUNDLE/Contents/MacOS"
@@ -131,6 +136,9 @@ xcrun swiftc \
     "$ROOT_DIR/BoFinderApp/MeetingManager.swift" \
     "$ROOT_DIR/BoFinderApp/MeetingView.swift" \
     "$ROOT_DIR/BoFinderApp/AppUpdater.swift" \
+    "$ROOT_DIR/BoFinderApp/EnvModels.swift" \
+    "$ROOT_DIR/BoFinderApp/EnvManager.swift" \
+    "$ROOT_DIR/BoFinderApp/EnvView.swift" \
     "$ROOT_DIR/BoFinderApp/SettingsWindow.swift" \
     "$ROOT_DIR/BoFinderApp/AppDelegate.swift" \
     "$ROOT_DIR/BoFinderApp/main.swift" \
