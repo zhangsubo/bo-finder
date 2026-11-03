@@ -195,6 +195,25 @@ struct SettingsView: View {
                         ))
                         .fontWeight(.semibold)
 
+                        if !eventTapManager.isAccessibilityTrusted || !eventTapManager.isEventTapRunning {
+                            HStack(spacing: 8) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundColor(.orange)
+                                Text("macOS 在 iCloud 云盘（含开启 iCloud 同步的「桌面」与「文稿」）中禁用了原生 Finder 扩展，需开启「辅助功能」权限方可弹出置顶快捷栏。")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                Spacer()
+                                Button("前往授权") {
+                                    selectedTab = 4
+                                    eventTapManager.checkPermissionAndStartIfPossible(promptIfNeeded: true)
+                                }
+                                .controlSize(.small)
+                            }
+                            .padding(8)
+                            .background(Color.orange.opacity(0.08))
+                            .cornerRadius(6)
+                        }
 
                         Divider()
 
@@ -669,18 +688,19 @@ struct SettingsView: View {
     private var permissionsAndDoctorTab: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                GroupBox(label: Label("辅助功能权限（用于支持 Finder 剪切粘贴与隐藏文件快捷键）", systemImage: "hand.raised.fill")) {
+                GroupBox(label: Label("辅助功能权限（用于支持 iCloud 右键快捷栏、剪切粘贴与隐藏文件快捷键）", systemImage: "hand.raised.fill")) {
                     HStack(spacing: 12) {
                         Image(systemName: eventTapManager.isAccessibilityTrusted ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                             .foregroundColor(eventTapManager.isAccessibilityTrusted ? .green : .orange)
                             .font(.title2)
 
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(eventTapManager.isAccessibilityTrusted ? (eventTapManager.isEventTapRunning ? "辅助功能已授权，快捷键监听运行中" : "辅助功能已授权，快捷键监听尚未启动") : "需要开启「辅助功能」权限以支持 Finder 快捷键")
+                            Text(eventTapManager.isAccessibilityTrusted ? (eventTapManager.isEventTapRunning ? "辅助功能已授权，右键快捷栏与快捷键监听运行中" : "辅助功能已授权，事件监听尚未启动") : "需要开启「辅助功能」权限以支持 iCloud 右键快捷栏与 Finder 快捷键")
                                 .fontWeight(.semibold)
-                            Text("在「系统设置 -> 隐私与安全性 -> 辅助功能」中勾选 DeskSide（旧版本可能仍显示 BoFinder）。")
+                            Text("在「系统设置 -> 隐私与安全性 -> 辅助功能」中勾选当前运行的 DeskSide。若升级或重编译后开关已勾选仍显示未授权，请先关闭再重新打开该开关（建议固定从 /Applications/DeskSide.app 启动）。")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
 
                         Spacer()

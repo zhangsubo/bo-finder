@@ -14,6 +14,48 @@ public enum PathFormatter {
         return home
     }
 
+    /// Checks whether a file/folder URL is backed by iCloud Drive or a FileProvider CloudStorage domain.
+    /// Covers both `/Library/Mobile Documents` / `/Library/CloudStorage` paths and iCloud-synced `~/Desktop`
+    /// and `~/Documents` folders on modern macOS (where POSIX paths stay under `~/` while macOS disables `FinderSync`).
+    public static func isCloudBackedURL(
+        _ url: URL,
+        ubiquitousLookup: ((URL) -> Bool)? = nil
+    ) -> Bool {
+        let standardized = url.standardizedFileURL
+        let path = standardized.path
+        if path.contains("/Library/Mobile Documents") || path.contains("/Library/CloudStorage") {
+            return true
+        }
+
+        let checkUbiquitous: (URL) -> Bool = ubiquitousLookup ?? { candidate in
+            guard let values = try? candidate.resourceValues(forKeys: [
+                .isUbiquitousItemKey,
+                .ubiquitousItemDownloadingStatusKey
+            ]) else {
+                return false
+            }
+            return values.isUbiquitousItem == true || values.ubiquitousItemDownloadingStatus != nil
+        }
+
+        let homePath = URL(fileURLWithPath: realHomeDirectory()).standardizedFileURL.path
+        var current = standardized
+        for _ in 0..<16 {
+            let currentPath = current.path
+            if currentPath.isEmpty || currentPath == "/" || currentPath == homePath {
+                break
+            }
+            if checkUbiquitous(current) {
+                return true
+            }
+            let parent = current.deletingLastPathComponent()
+            if parent.path == currentPath {
+                break
+            }
+            current = parent
+        }
+        return false
+    }
+
     public static func format(
         urls: [URL],
         as format: PathFormat,

@@ -173,6 +173,43 @@ struct PathFormatterTests {
             assertEqual(HiddenFilesPreferenceParser.parse("1"), true, "String 1 parsed as true")
             assertEqual(HiddenFilesPreferenceParser.parse("NO"), false, "String NO parsed as false")
             assertEqual(HiddenFilesPreferenceParser.parse("0"), false, "String 0 parsed as false")
+
+            // 10. iCloud & CloudStorage detection (including iCloud-synced ~/Desktop & ~/Documents)
+            let mobileDocsURL = URL(fileURLWithPath: "\(home)/Library/Mobile Documents/com~apple~CloudDocs/个人/a.png")
+            assertEqual(
+                PathFormatter.isCloudBackedURL(mobileDocsURL, ubiquitousLookup: { _ in false }),
+                true,
+                "Classic iCloud Drive Mobile Documents path detected as cloud"
+            )
+            let cloudStorageURL = URL(fileURLWithPath: "\(home)/Library/CloudStorage/OneDrive-Personal/doc.docx")
+            assertEqual(
+                PathFormatter.isCloudBackedURL(cloudStorageURL, ubiquitousLookup: { _ in false }),
+                true,
+                "FileProvider CloudStorage path detected as cloud"
+            )
+            let syncedDesktopNestedURL = URL(fileURLWithPath: "\(home)/Desktop/图片文件/20211206101844_407ff.jpeg")
+            assertEqual(
+                PathFormatter.isCloudBackedURL(syncedDesktopNestedURL, ubiquitousLookup: { candidate in
+                    candidate.path == "\(home)/Desktop"
+                }),
+                true,
+                "iCloud-synced ~/Desktop nested file detected via ancestor ubiquitous status"
+            )
+            assertEqual(
+                PathFormatter.isCloudBackedURL(syncedDesktopNestedURL, ubiquitousLookup: { candidate in
+                    candidate.path == syncedDesktopNestedURL.path
+                }),
+                true,
+                "Direct ubiquitous item under ~/Desktop detected as cloud"
+            )
+            let localDownloadsURL = URL(fileURLWithPath: "\(home)/Downloads/archive.zip")
+            assertEqual(
+                PathFormatter.isCloudBackedURL(localDownloadsURL, ubiquitousLookup: { candidate in
+                    candidate.path == home
+                }),
+                false,
+                "Local ~/Downloads file is not falsely flagged as cloud and stops at home directory"
+            )
         } catch {
             failed += 1
             print("  ❌ Configuration compatibility: \(error)")

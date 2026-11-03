@@ -46,7 +46,11 @@ final class LaunchAtLoginManager {
         let agentsDir = launchAgentPlistURL.deletingLastPathComponent()
         try? fm.createDirectory(at: agentsDir, withIntermediateDirectories: true)
 
-        let appBundlePath = Bundle.main.bundleURL.path
+        let currentBundlePath = Bundle.main.bundleURL.path
+        let installedAppPath = "/Applications/DeskSide.app"
+        let appBundlePath = (currentBundlePath.hasSuffix("/build/DeskSide.app") && fm.fileExists(atPath: installedAppPath))
+            ? installedAppPath
+            : currentBundlePath
         let plistDict: [String: Any] = [
             "Label": agentLabel,
             "ProgramArguments": ["/usr/bin/open", "-a", appBundlePath],

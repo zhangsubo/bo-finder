@@ -3,21 +3,38 @@ import ApplicationServices
 
 enum FinderSelectionHelper {
     /// Use system-wide hit testing so overlays such as Dock are not mistaken for Finder behind them.
+    /// Also ignores clicks on Finder's window toolbar or menu bar so customizing the toolbar does not pop up quick bars.
     static func isFinderElement(at cgPoint: CGPoint, finderPID: pid_t) -> Bool {
         var hitElement: AXUIElement?
         guard AXUIElementCopyElementAtPosition(
             AXUIElementCreateSystemWide(), Float(cgPoint.x), Float(cgPoint.y), &hitElement
-        ) == .success, let hitElement = hitElement else {
+        ) == .success, var current = hitElement else {
             return false
         }
         var ownerPID: pid_t = 0
-        return AXUIElementGetPid(hitElement, &ownerPID) == .success && ownerPID == finderPID
+        guard AXUIElementGetPid(current, &ownerPID) == .success, ownerPID == finderPID else {
+            return false
+        }
+
+        for _ in 0..<10 {
+            if let role = axRole(of: current) {
+                if role == "AXToolbar" || role == (kAXMenuBarRole as String) || role == (kAXMenuRole as String) {
+                    return false
+                }
+                if role == (kAXWindowRole as String) || role == (kAXApplicationRole as String) {
+                    break
+                }
+            }
+            guard let parent = axParent(of: current) else { break }
+            current = parent
+        }
+        return true
     }
 
-    /// Checks whether a given URL is inside iCloud Drive or CloudStorage where macOS 14+ disables third-party FinderSync extensions.
+    /// Checks whether a given URL is inside iCloud Drive (including iCloud-synced Desktop & Documents)
+    /// or CloudStorage where macOS 14+ disables third-party FinderSync extensions.
     static func isCloudFolder(_ url: URL) -> Bool {
-        let path = url.path
-        return path.contains("/Library/Mobile Documents") || path.contains("/Library/CloudStorage")
+        return PathFormatter.isCloudBackedURL(url)
     }
 
     /// Reads currently selected file URLs in Finder via Accessibility (and optionally hit-tests the mouse CGPoint).
@@ -37,38 +54,34 @@ enum FinderSelectionHelper {
             selectedURLs.append(contentsOf: extractSelectedURLs(from: focusedElem))
         }
 
+        // 1b. If Finder was unfocused when right-clicked, inspect the view container under the cursor for prior multi-selection
+        if selectedURLs.isEmpty, let pt = mouseCGPoint, let container = selectionContainerAtScreenPoint(pt, appElem: appElem) {
+            selectedURLs.append(contentsOf: extractSelectedURLs(from: container))
+        }
+
         // 2. If a mouse click point (CGEvent location, top-left screen origin) was provided, also hit-test the item under cursor
         if let pt = mouseCGPoint, let hitURL = urlAtScreenPoint(pt, appElem: appElem) {
-            if !selectedURLs.contains(where: { $0.path == hitURL.path }) {
+            let hitStd = hitURL.standardizedFileURL.path
+            if !selectedURLs.contains(where: { $0.standardizedFileURL.path == hitStd }) {
                 // When user right-clicks a specific item that wasn't part of the prior selection, Finder targets the clicked item
                 selectedURLs = [hitURL]
             }
         }
 
-        // 3. Read current folder URL from the focused/main Finder window
+        // 3. Read current folder URL: prefer the specific Finder window (or Desktop) under the cursor first
         var currentFolderURL: URL?
-        for winAttr in [kAXFocusedWindowAttribute as CFString, kAXMainWindowAttribute as CFString] {
-            var winRef: CFTypeRef?
-            if AXUIElementCopyAttributeValue(appElem, winAttr, &winRef) == .success,
-               let winObj = winRef {
-                let winElem = winObj as! AXUIElement
-                var docRef: CFTypeRef?
-                if AXUIElementCopyAttributeValue(winElem, kAXDocumentAttribute as CFString, &docRef) == .success,
-                   let docStr = docRef as? String,
-                   let url = URL(string: docStr),
-                   url.isFileURL {
-                    currentFolderURL = url
-                    break
-                }
+        if let pt = mouseCGPoint {
+            currentFolderURL = folderURLAtScreenPoint(pt, appElem: appElem)
+        }
 
-                // Special case: top-level "iCloud云盘" / "iCloud Drive" window where AXDocument is nil
-                var titleRef: CFTypeRef?
-                if AXUIElementCopyAttributeValue(winElem, kAXTitleAttribute as CFString, &titleRef) == .success,
-                   let title = titleRef as? String,
-                   (title.localizedCaseInsensitiveContains("iCloud") || title == "云盘") {
-                    let iCloudRoot = "\(PathFormatter.realHomeDirectory())/Library/Mobile Documents/com~apple~CloudDocs"
-                    if FileManager.default.fileExists(atPath: iCloudRoot) {
-                        currentFolderURL = URL(fileURLWithPath: iCloudRoot)
+        if currentFolderURL == nil {
+            for winAttr in [kAXFocusedWindowAttribute as CFString, kAXMainWindowAttribute as CFString] {
+                var winRef: CFTypeRef?
+                if AXUIElementCopyAttributeValue(appElem, winAttr, &winRef) == .success,
+                   let winObj = winRef {
+                    let winElem = winObj as! AXUIElement
+                    if let resolved = folderURL(fromWindow: winElem) {
+                        currentFolderURL = resolved
                         break
                     }
                 }
@@ -82,13 +95,63 @@ enum FinderSelectionHelper {
 
         // Deduplicate while preserving order
         var seen = Set<String>()
-        let uniqueSelected = selectedURLs.filter { seen.insert($0.path).inserted }
+        let uniqueSelected = selectedURLs.filter { seen.insert($0.standardizedFileURL.path).inserted }
 
         return (uniqueSelected, currentFolderURL)
     }
 
     /// Hit-tests the Finder UI element at `cgPoint` (top-left origin screen coordinates) to find the file/folder URL under the cursor.
     static func urlAtScreenPoint(_ cgPoint: CGPoint, appElem: AXUIElement? = nil) -> URL? {
+        guard var currentElem = hitFinderElement(at: cgPoint, appElem: appElem) else {
+            return nil
+        }
+
+        let containerStopRoles: Set<String> = [
+            kAXWindowRole as String,
+            kAXScrollAreaRole as String,
+            kAXApplicationRole as String,
+            kAXOutlineRole as String,
+            kAXListRole as String,
+            kAXBrowserRole as String,
+            "AXSplitGroup",
+            "AXToolbar"
+        ]
+
+        // Walk up parent levels (e.g. AXStaticText/AXImage -> AXGroup -> AXCell -> AXRow/AXIcon) looking for AXURL
+        for _ in 0..<6 {
+            let role = axRole(of: currentElem)
+            if let role = role {
+                // Stop if we hit a multi-item view or window container so empty-space clicks never grab the first file in the folder
+                if containerStopRoles.contains(role) {
+                    break
+                }
+                if role == (kAXGroupRole as String),
+                   let parent = axParent(of: currentElem),
+                   axRole(of: parent) == (kAXScrollAreaRole as String) {
+                    break
+                }
+            }
+
+            if let directURL = extractDirectURL(from: currentElem) {
+                return directURL
+            }
+
+            if role == (kAXRowRole as String) || role == (kAXCellRole as String) {
+                if let rowURL = extractURL(from: currentElem, maxDepth: 4) {
+                    return rowURL
+                }
+            }
+
+            if let parent = axParent(of: currentElem) {
+                currentElem = parent
+            } else {
+                break
+            }
+        }
+        return nil
+    }
+
+    private static func hitFinderElement(at cgPoint: CGPoint, appElem: AXUIElement? = nil) -> AXUIElement? {
         let targetAppElem: AXUIElement
         if let provided = appElem {
             targetAppElem = provided
@@ -100,32 +163,150 @@ enum FinderSelectionHelper {
         }
 
         var hitElemRef: AXUIElement?
-        let err = AXUIElementCopyElementAtPosition(targetAppElem, Float(cgPoint.x), Float(cgPoint.y), &hitElemRef)
-        guard err == .success, var currentElem = hitElemRef else {
-            return nil
+        if AXUIElementCopyElementAtPosition(targetAppElem, Float(cgPoint.x), Float(cgPoint.y), &hitElemRef) == .success,
+           let hit = hitElemRef {
+            return hit
         }
 
-        // Walk up to 5 parent levels (e.g. AXStaticText/AXImage -> AXCell -> AXRow/AXIcon) looking for AXURL
-        for _ in 0..<5 {
-            var roleRef: CFTypeRef?
-            if AXUIElementCopyAttributeValue(currentElem, kAXRoleAttribute as CFString, &roleRef) == .success,
-               let role = roleRef as? String {
-                // Stop if we hit the window or scroll area container so we don't accidentally treat the window document as a clicked item
-                if role == (kAXWindowRole as String) || role == (kAXScrollAreaRole as String) || role == (kAXApplicationRole as String) {
+        // Fallback to system-wide hit-testing when Finder is currently unfocused in the background
+        var sysHitRef: AXUIElement?
+        var targetPID: pid_t = 0
+        guard AXUIElementGetPid(targetAppElem, &targetPID) == .success,
+              AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), Float(cgPoint.x), Float(cgPoint.y), &sysHitRef) == .success,
+              let sysHit = sysHitRef else {
+            return nil
+        }
+        var hitPID: pid_t = 0
+        guard AXUIElementGetPid(sysHit, &hitPID) == .success, hitPID == targetPID else {
+            return nil
+        }
+        return sysHit
+    }
+
+    private static func selectionContainerAtScreenPoint(_ cgPoint: CGPoint, appElem: AXUIElement) -> AXUIElement? {
+        guard var current = hitFinderElement(at: cgPoint, appElem: appElem) else { return nil }
+        let selectionContainerRoles: Set<String> = [
+            kAXOutlineRole as String,
+            kAXListRole as String,
+            kAXBrowserRole as String,
+            kAXGroupRole as String
+        ]
+        for _ in 0..<10 {
+            if let role = axRole(of: current) {
+                if role == (kAXWindowRole as String) || role == (kAXApplicationRole as String) {
+                    break
+                }
+                if selectionContainerRoles.contains(role) {
+                    var selChildren: CFTypeRef?
+                    var selRows: CFTypeRef?
+                    if AXUIElementCopyAttributeValue(current, kAXSelectedChildrenAttribute as CFString, &selChildren) == .success
+                        || AXUIElementCopyAttributeValue(current, kAXSelectedRowsAttribute as CFString, &selRows) == .success {
+                        return current
+                    }
+                }
+            }
+            guard let parent = axParent(of: current) else { break }
+            current = parent
+        }
+        return nil
+    }
+
+    private static func folderURLAtScreenPoint(_ cgPoint: CGPoint, appElem: AXUIElement) -> URL? {
+        guard var current = hitFinderElement(at: cgPoint, appElem: appElem) else { return nil }
+        var sawScrollArea = false
+        for _ in 0..<15 {
+            if let role = axRole(of: current) {
+                if role == (kAXScrollAreaRole as String) {
+                    sawScrollArea = true
+                }
+                if role == (kAXWindowRole as String) {
+                    return folderURL(fromWindow: current)
+                }
+                if role == (kAXApplicationRole as String) {
+                    // Finder's Desktop icons/surface live under AXApplication -> AXScrollArea -> AXGroup without an AXWindow
+                    if sawScrollArea {
+                        let desktopPath = "\(PathFormatter.realHomeDirectory())/Desktop"
+                        if FileManager.default.fileExists(atPath: desktopPath) {
+                            return URL(fileURLWithPath: desktopPath)
+                        }
+                    }
                     break
                 }
             }
+            guard let parent = axParent(of: current) else { break }
+            current = parent
+        }
+        return nil
+    }
 
-            if let url = extractURL(from: currentElem) {
-                return url
+    private static func folderURL(fromWindow winElem: AXUIElement) -> URL? {
+        var docRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(winElem, kAXDocumentAttribute as CFString, &docRef) == .success,
+           let docStr = docRef as? String,
+           let url = URL(string: docStr),
+           url.isFileURL {
+            return url
+        }
+
+        // Window proxy icon often holds AXURL even when AXDocument is unavailable
+        var proxyRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(winElem, kAXProxyAttribute as CFString, &proxyRef) == .success,
+           let proxyObj = proxyRef,
+           let proxyURL = extractDirectURL(from: proxyObj as! AXUIElement) {
+            return proxyURL
+        }
+
+        // Special cases: top-level "iCloud云盘" / "iCloud Drive" or standard user folders where AXDocument is nil
+        var titleRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(winElem, kAXTitleAttribute as CFString, &titleRef) == .success,
+           let title = titleRef as? String {
+            let home = PathFormatter.realHomeDirectory()
+            if title.localizedCaseInsensitiveContains("iCloud") || title == "云盘" {
+                let iCloudRoot = "\(home)/Library/Mobile Documents/com~apple~CloudDocs"
+                if FileManager.default.fileExists(atPath: iCloudRoot) {
+                    return URL(fileURLWithPath: iCloudRoot)
+                }
+            } else if title == "桌面" || title == "Desktop" {
+                let desktopPath = "\(home)/Desktop"
+                if FileManager.default.fileExists(atPath: desktopPath) {
+                    return URL(fileURLWithPath: desktopPath)
+                }
+            } else if title == "文稿" || title == "Documents" {
+                let docsPath = "\(home)/Documents"
+                if FileManager.default.fileExists(atPath: docsPath) {
+                    return URL(fileURLWithPath: docsPath)
+                }
             }
+        }
+        return nil
+    }
 
-            var parentRef: CFTypeRef?
-            if AXUIElementCopyAttributeValue(currentElem, kAXParentAttribute as CFString, &parentRef) == .success,
-               let parentObj = parentRef {
-                currentElem = (parentObj as! AXUIElement)
-            } else {
-                break
+    private static func axRole(of element: AXUIElement) -> String? {
+        var roleRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef) == .success {
+            return roleRef as? String
+        }
+        return nil
+    }
+
+    private static func axParent(of element: AXUIElement) -> AXUIElement? {
+        var parentRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXParentAttribute as CFString, &parentRef) == .success,
+           let parentObj = parentRef {
+            return (parentObj as! AXUIElement)
+        }
+        return nil
+    }
+
+    private static func extractDirectURL(from element: AXUIElement) -> URL? {
+        var urlRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXURLAttribute as CFString, &urlRef) == .success,
+           let val = urlRef {
+            if CFGetTypeID(val) == CFURLGetTypeID() {
+                return (val as! URL)
+            }
+            if let str = val as? String, let url = URL(string: str), url.isFileURL {
+                return url
             }
         }
         return nil

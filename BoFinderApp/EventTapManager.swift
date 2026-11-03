@@ -84,50 +84,68 @@ final class EventTapManager: ObservableObject {
             return Unmanaged.passUnretained(event)
         }
 
-        // Only intercept events when Finder is the frontmost application
-        guard let frontApp = NSWorkspace.shared.frontmostApplication,
-              frontApp.bundleIdentifier == "com.apple.finder" else {
+        let flags = event.flags.intersection([.maskCommand, .maskAlternate, .maskControl, .maskShift])
+
+        // Right-clicking a background/unfocused Finder window or Desktop icon opens Finder's context menu
+        // even before Finder becomes `frontmostApplication`. Use system-wide AX hit-testing against Finder's PID
+        // so both focused and unfocused Finder right-clicks work while Dock / other apps are ignored.
+        if type == .rightMouseDown || (type == .leftMouseDown && flags == .maskControl) {
+            guard let finderApp = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.finder").first,
+                  FinderSelectionHelper.isFinderElement(at: event.location, finderPID: finderApp.processIdentifier) else {
+                return Unmanaged.passUnretained(event)
+            }
+
+            // Option + Right-Click in Finder: pop up DeskSide quick menu directly
+            if type == .rightMouseDown && flags == .maskAlternate {
+                let cgPoint = event.location
+                DispatchQueue.main.async {
+                    QuickPopupMenuController.shared.showAtMouseLocation(mouseCGPoint: cgPoint)
+                }
+                return nil
+            }
+
+            // Standard Right-Click (or Control + Left-Click) in Finder:
+            // Query the item/folder under the cursor BEFORE Finder opens the context menu (which would occlude AX hit-testing),
+            // then present the top companion quick bar right above Finder's context menu.
+            let isStandardRightClick = (type == .rightMouseDown && flags.isEmpty)
+                || (type == .leftMouseDown && flags == .maskControl)
+            if isStandardRightClick {
+                let cgPoint = event.location
+                let screenPoint = NSEvent.mouseLocation
+                let alwaysShowTopBar = CutPasteManager.shared.state.config.showTopQuickBarOnRightClick
+                let (selected, folder) = FinderSelectionHelper.currentSelectionOrFolderURLs(mouseCGPoint: cgPoint)
+                if let url = selected.first ?? folder {
+                    if alwaysShowTopBar || FinderSelectionHelper.isCloudFolder(url) {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) {
+                            CloudQuickBarController.shared.showAboveCursor(
+                                at: screenPoint,
+                                selectedURLs: selected,
+                                folderURL: folder
+                            )
+                        }
+                    }
+                } else {
+                    // Fallback: if Finder had not yet exposed AX attributes on an unfocused window at mouseDown,
+                    // re-check Finder's updated selection/window right after Finder processes the click.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                        let (retrySelected, retryFolder) = FinderSelectionHelper.currentSelectionOrFolderURLs()
+                        guard let retryURL = retrySelected.first ?? retryFolder else { return }
+                        if alwaysShowTopBar || FinderSelectionHelper.isCloudFolder(retryURL) {
+                            CloudQuickBarController.shared.showAboveCursor(
+                                at: screenPoint,
+                                selectedURLs: retrySelected,
+                                folderURL: retryFolder
+                            )
+                        }
+                    }
+                }
+            }
             return Unmanaged.passUnretained(event)
         }
 
-        let flags = event.flags.intersection([.maskCommand, .maskAlternate, .maskControl, .maskShift])
-
-        // Dock clicks do not necessarily change the frontmost app. Check the actual
-        // hit element before reading Finder's selection or intercepting a mouse click.
-        if type == .rightMouseDown || (type == .leftMouseDown && flags == .maskControl) {
-            guard FinderSelectionHelper.isFinderElement(at: event.location, finderPID: frontApp.processIdentifier) else {
-                return Unmanaged.passUnretained(event)
-            }
-        }
-
-        // Option + Right-Click in Finder: pop up BoFinder quick menu directly
-        if type == .rightMouseDown && flags == .maskAlternate {
-            DispatchQueue.main.async {
-                QuickPopupMenuController.shared.showAtMouseLocation()
-            }
-            return nil
-        }
-
-        // Standard Right-Click (or Control + Left-Click) in Finder:
-        // Query the item/folder under the cursor BEFORE Finder opens the context menu (which would occlude AX hit-testing),
-        // then present the top companion quick bar right above Finder's context menu.
-        let isStandardRightClick = (type == .rightMouseDown && flags.isEmpty)
-            || (type == .leftMouseDown && flags == .maskControl)
-        if isStandardRightClick {
-            let cgPoint = event.location
-            let screenPoint = NSEvent.mouseLocation
-            let alwaysShowTopBar = CutPasteManager.shared.state.config.showTopQuickBarOnRightClick
-            let (selected, folder) = FinderSelectionHelper.currentSelectionOrFolderURLs(mouseCGPoint: cgPoint)
-            let checkURL = selected.first ?? folder
-            if let url = checkURL, (alwaysShowTopBar || FinderSelectionHelper.isCloudFolder(url)) {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) {
-                    CloudQuickBarController.shared.showAboveCursor(
-                        at: screenPoint,
-                        selectedURLs: selected,
-                        folderURL: folder
-                    )
-                }
-            }
+        // Only intercept keyboard events when Finder is the frontmost application
+        guard let frontApp = NSWorkspace.shared.frontmostApplication,
+              frontApp.bundleIdentifier == "com.apple.finder" else {
             return Unmanaged.passUnretained(event)
         }
 

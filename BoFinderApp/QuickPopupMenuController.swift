@@ -5,8 +5,8 @@ final class QuickPopupMenuController: NSObject {
 
     private var activeMenu: NSMenu?
 
-    func showAtMouseLocation() {
-        let (selectedURLs, folderURL) = FinderSelectionHelper.currentSelectionOrFolderURLs()
+    func showAtMouseLocation(mouseCGPoint: CGPoint? = nil) {
+        let (selectedURLs, folderURL) = FinderSelectionHelper.currentSelectionOrFolderURLs(mouseCGPoint: mouseCGPoint)
         let targetURLs = !selectedURLs.isEmpty ? selectedURLs : (folderURL != nil ? [folderURL!] : [])
         guard !targetURLs.isEmpty else {
             HUDWindowController.shared.show(

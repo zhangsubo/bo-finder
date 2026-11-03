@@ -153,7 +153,8 @@ final class CloudQuickBarController {
         // Position directly above the cursor so it sits neatly at the top of Finder's native right-click menu
         var x = screenPoint.x - 12
         var y = screenPoint.y + 12
-        if let screenFrame = NSScreen.main?.visibleFrame {
+        let targetScreen = NSScreen.screens.first(where: { NSMouseInRect(screenPoint, $0.frame, false) }) ?? NSScreen.main
+        if let screenFrame = targetScreen?.visibleFrame {
             if x + width > screenFrame.maxX - 8 {
                 x = screenFrame.maxX - width - 8
             }

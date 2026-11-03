@@ -231,7 +231,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         if !eventTap.isAccessibilityTrusted {
             let authItem = NSMenuItem(
-                title: "⚠️ 点击开启辅助功能权限 (支持 ⌘+X / ⌘+V)...",
+                title: "⚠️ 点击开启辅助功能权限 (支持 iCloud 右键快捷栏与 ⌘+X / ⌘+V)...",
                 action: #selector(requestAccessibilityPermission(_:)),
                 keyEquivalent: ""
             )
