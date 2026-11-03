@@ -1,9 +1,9 @@
 # 桌边 · DeskSide — macOS 原生个人工具箱
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Platform: macOS 13+](https://img.shields.io/badge/Platform-macOS%2013%2B-lightgrey.svg)]()
+[![Platform: macOS 26+](https://img.shields.io/badge/Platform-macOS%2026%2B-lightgrey.svg)]()
 
-`DeskSide` 是一款运行在个人 Mac 上的原生工具箱（SwiftUI + AppKit），由 BoFinder 演进而来，沿用原有 logo。已承接文件工具，并加入会议助手首版；安全网关仍为占位。
+`DeskSide` 是一款运行在个人 Mac 上的原生工具箱（SwiftUI + AppKit），由 BoFinder 演进而来，沿用原有 logo。现已内置文件工具与零 Python 依赖的本地实时会议助手；安全网关仍为占位。
 
 主窗口采用固定全局侧边栏，「设置与关于」在所有页面均可访问。菜单栏常驻，关闭窗口后继续运行，支持隐藏 Dock 图标、开机启动和跟随系统／浅色／深色外观。
 
@@ -16,48 +16,41 @@
 - 使用本地 ad-hoc 签名，升级后 macOS 可能要求重新授予辅助功能权限。在「文件工具 → 权限与诊断」中查看；应用不会自动清除已有授权。
 - 两个 logo 源文件和图标生成方式保持不变。
 
-## 会议助手（首版）
+## 会议助手（macOS 26+ 原生零依赖架构）
 
-- 原生主窗口管理会议，手动录制麦克风和系统音频，支持暂停、结束、分段保存及中断恢复。
-- 本地 X-ASR 常驻进程提供准实时文字；会后用 pyannote segmentation + 3D-Speaker 分离说话人，再生成带时间和 A/B/C 标签的转录。支持按会议统一改名、修改文字、导出 Markdown。
-- macOS 26+ 可在「会议设置 → 转录 → 会中实时识别」选择实验性的 Apple 原生转录（SpeechAnalyzer / SpeechTranscriber）。支持普通话和英语选项，先检查并准备系统语言模型；音频在本机识别，不依赖 Apple Intelligence 总结功能。原有配置继续默认 X-ASR。
-- 使用可配置的 OpenAI 兼容 Chat Completions 接口和默认模板生成纪要，修改转录后可重新生成。API Key 保存在 macOS Keychain。
-- 可选 MiMo 风格的 `input_audio` 云端转录；该适配器不等同于通用 `/audio/transcriptions`，目前没有实时预览、稳定说话人标签和精确时间。
-- 腾讯会议、微信通话自动识别使用 CoreAudio 活动和窗口信号，需要 macOS 14.2+，**尚待真实通话验证**。首次默认关闭，手动录音完成系统授权后再开启。
+- **开箱即用，零 Python 依赖**：
+  - **双音源无感采集**：线上会议使用 Core Audio Process Tap（`CATapDescription`，自动排除本进程 PID）采集系统音频，仅需系统音频录制权限（无需屏幕录制权限）；同时采集麦克风音频，支持暂停、继续、分段持久化与异常中断恢复，单场最长 4 小时。
+  - **Apple 原生流式语音识别**：内存直推 `AVAudioPCMBuffer` 至 `.unbounded` `AsyncStream<AnalyzerInput>`，配合 `0.25s` 微停顿主动断句（`analyzer.finalize(through:)`）、呼吸噪声清洗与 `≤ 1.5s` 短停顿智能续接（`MeetingHeardText`）、扬声器外放回声去重及断流指数退避重连，支持普通话、英语及中英自动评分择优。
+  - **内置 Core ML 实时声纹分离**：随包内置 WeSpeaker ResNet34-LM 声纹模型（`SpeakerEmbedding.mlpackage`）与纯 Swift `Accelerate/vDSP` 80 维 Kaldi Fbank 提取，实时区分「我」与多位参会人（`说话人 1/2/…`），支持一键改名、跨声纹簇合并，以及基于上下文 `±2` 行证据校验的 AI 说话人姓名推断。
+- **会中实时结构化纪要 & 投屏隐身桌边悬浮窗**：
+  - **增量结构化纪要**：会中满 3 句自动生成首轮纪要，之后每 45 秒增量刷新，结束会议后执行全文终审；自动提炼日历风格短标题、概览、分时段议题、数字/日期/金额高亮结论、带负责人待办、根因分析鱼骨图（`≥ 2` 分支时自动展开）与同音误听术语表。
+  - **证据回溯与同音词搜索**：点击任意议题、结论或待办右侧的时间戳胶囊可直接跳转并高亮对应转录原句、回放对应录音位置；`⌘F` 搜索支持联动术语表 `heard` 同音误听词一并高亮命中。
+  - **防屏幕共享泄露悬浮窗**：基于 `.nonactivatingPanel` + `FirstClickHostingView`，点击交互不抢腾讯会议／飞书／钉钉／Zoom 焦点；默认开启 `sharingType = .none` 在屏幕共享与截图中完全隐身（若手动开启允许共享，顶部常驻呼吸橙色警示灯）；支持拖窄 `< 360pt` 迷你跟进卡片、`360–760pt` 侧栏与 `≥ 760pt` 纪要+转录双栏三种自适应形态。
+- **通用模型接口与文档导出**：
+  - 使用任意兼容 OpenAI Chat Completions 的接口生成结构化纪要（自动剥离推理模型 `<think>` 标签与代码围栏），API Key 仅保存在 macOS Keychain。
+  - 支持一键导出原生 **Word (`.docx`)** 与 **Markdown (`.md`)**，支持对历史转录逐句校对与归档保留。
+  - 兼容保留可选的本地 Python `X-ASR` 引擎与 `MiMo` 云端音频转录模式；旧版 `configuration.json` 与 `meeting.json` 无需迁移即可直接读取。
+  - 支持腾讯会议、微信、飞书、钉钉、Zoom 通话自动检测（基于 Core Audio 进程音频流检测，默认关闭，首次手动录音完成授权后可按应用单独开关）。
 
-本地环境准备（Python 3.11+，需联网下载模型；当前已验证环境为 Apple Silicon / Python 3.14）：
+常用验证与基准测试命令：
 
 ```bash
-python3 scripts/setup_meeting_runtime.py
+# 运行全部单元测试并构建打包 build/DeskSide.app
 ./build.sh
-# 可选：本机模拟模型接口测试，不访问云端
+
+# 本机回环模拟 Chat Completions 契约与防重定向凭据泄露测试
 python3 scripts/test_meeting_cloud.py
-```
 
-从 `build/DeskSide.app` 启动时会识别相邻的 `meeting-runtime`、`meeting-models`。安装到其他位置后，在「会议设置 → 转录」中指定 Python 可执行文件和模型目录。模型未就绪时仍可保存录音，会后补做转录。当前本地实现使用 X-ASR；Whisper、Gemma 尚未接入。
-
-Apple 选项目前只替换会中预览，会后完整转录与说话人分离仍需上述 Python / X-ASR 环境；本地纪要模型尚未接入。Apple 模型检查不下载资源，「下载并准备」会请求系统安装语言模型。选择不可用的模型时会提示原因并继续保存录音，不自动上传或切换识别引擎。录音期间不能更换实时引擎与 Apple 语言。
-
-开发者可用已有的 16 kHz 单声道 WAV 比较两种实时引擎（不访问麦克风；构建需 macOS 26+ SDK）：
-
-```bash
-xcrun swiftc -parse-as-library -target arm64-apple-macos13.0 \
+# Apple 原生流式转录独立基准测试（16 kHz 单声道 WAV，不访问麦克风）
+xcrun swiftc -sdk "$(xcrun --sdk macosx --show-sdk-path)" -parse-as-library \
+  -target "$(uname -m)-apple-macos26.0" \
   BoFinderApp/MeetingModels.swift BoFinderApp/MeetingAppleSpeech.swift \
   scripts/benchmark_apple_speech.swift -o build/benchmark_apple_speech
 build/benchmark_apple_speech --check
-# 首次需要时：build/benchmark_apple_speech --install
 build/benchmark_apple_speech --audio /path/to/fixture.wav --realtime
-build/meeting-runtime/bin/python scripts/benchmark_meeting_stream.py \
-  --audio /path/to/fixture.wav --models build/meeting-models --realtime
 ```
 
-两种测试都把同一音频复制为 mic/system 双路，首字墙钟时间可以比较；Apple 的异步结果回调与 X-ASR 的逐片段响应不是相同延迟指标。测试不包含真实设备采集、原生 UI 渲染或人工标注的讲话结束时刻。
-
-Apple 使用优先响应的快速模式。当前中文样本虽能更早显示首字，但仍有漏句，尚不足以替换 X-ASR 默认值；完整会议结果应以会后转录和人工校对为准。
-
-会议音频和文字存于 `~/Library/Application Support/DeskSide/Meetings/`。默认本地转录；选择云端 ASR 会发送音频，配置云端总结会发送转录文字。每次最多录制四小时。点时间戳仅回放对应短音频片段；旧转录和纪要保留在本地，当前界面只展示最新结果。重新转录会重新分配说话人标签，需重新确认姓名。
-
-说话人数量自动估计可能错误拆分，支持指定预计人数并人工校对。实时输出用于跟进会议，会后结果仍需校对。自动录音、双音源回声和原生 UI 尚需实机验收；不能仅凭编译通过认定可稳定用于所有会议。
+会议音频与纪要默认保存在 `~/Library/Application Support/DeskSide/Meetings/`。默认本地转录不上传任何音频；配置纪要接口后仅向你指定的端点发送会议文字转录。
 
 ## 文件工具
 
@@ -119,7 +112,19 @@ bo-finder/
 │   ├── FinderSelectionHelper.swift    # 基于 Accessibility 读取 Finder 选中项、光标命中项与当前目录
 │   ├── FinderExtensionDoctor.swift    # 基于 pluginkit 的 FinderSync 扩展注册与冲突管理
 │   ├── HUDWindowController.swift      # 毛玻璃悬浮提示窗 (HUD Toast)
-│   ├── SettingsWindow.swift           # SwiftUI 全局侧边栏、文件工具、设置与未来模块占位
+│   ├── MeetingModels.swift            # 会议记录、结构化纪要模型、文本续接与回声判重
+│   ├── MeetingCapture.swift           # 麦克风 + Core Audio Process Tap 双音源采集与会议进程检测
+│   ├── MeetingAppleSpeech.swift       # Apple SpeechAnalyzer 流式识别、微停顿断句与声纹环形缓冲
+│   ├── MeetingSpeakerID.swift         # Accelerate Kaldi Fbank、内置 Core ML 声纹聚类与姓名推断
+│   ├── MeetingNotes.swift             # 45s 实时增量结构化纪要引擎、证据映射与 Word (.docx) 导出
+│   ├── MeetingFloatingPanel.swift     # 投屏隐身非激活桌边悬浮窗与共享结构化纪要/转录视图
+│   ├── MeetingServices.swift          # OpenAI 兼容 Chat Completions 客户端、Keychain 与可选 X-ASR 桥接
+│   ├── MeetingManager.swift           # 会议会话编排、多切片连续回放与持久化管理
+│   ├── MeetingView.swift              # 主窗口会议助手工作台界面
+│   ├── AppUpdater.swift               # GitHub Release 自动检测、SHA-256 校验与无感热替换更新器
+│   ├── Resources/
+│   │   └── SpeakerEmbedding.mlpackage # 内置 WeSpeaker ResNet34-LM Core ML 声纹模型
+│   ├── SettingsWindow.swift           # SwiftUI 全局侧边栏、文件工具、会议设置与关于
 │   ├── Info.plist                     # 主应用配置
 │   └── BoFinder.entitlements          # 主应用权限配置
 ├── BoFinderSync/
@@ -127,9 +132,15 @@ bo-finder/
 │   ├── Info.plist                     # 扩展配置
 │   └── BoFinderSync.entitlements      # 扩展标准沙盒配置
 ├── scripts/
-│   └── generate_icon.swift            # 自动生成 AppIcon.icns 应用图标脚本
+│   ├── generate_icon.swift            # 自动生成 AppIcon.icns 应用图标脚本
+│   ├── update_local.sh                # 等待 GitHub Action 完成并同步更新本地 /Applications/DeskSide.app
+│   ├── benchmark_apple_speech.swift   # Apple 原生流式语音识别基准测试工具
+│   └── test_meeting_cloud.py          # Chat Completions 接口契约测试脚本
 └── Tests/
-    └── PathFormatterTests.swift       # 路径格式化单元测试
+    ├── PathFormatterTests.swift       # 文件工具路径与配置单元测试
+    ├── MeetingTests.swift             # 会议模型、Kaldi Fbank、Core ML 声纹、纪要解析与 .docx 导出测试
+    ├── MeetingAppleSpeechTests.swift  # WAV 流式读取采样完整性单元测试
+    └── MeetingCloudTests.swift        # Chat Completions 接口安全与边界测试
 ```
 
 ---
@@ -147,6 +158,7 @@ open build/DeskSide.app
 
 构建默认仅测试、编译、打包和签名；不会改变当前 Finder 扩展选择。DeskSide 启动时注册自身扩展。
 
-## 开源协议
+## 开源协议与致谢
 
-本项目基于 [MIT License](LICENSE) 开源。
+- 本项目基于 [MIT License](LICENSE) 开源。
+- 内置声纹提取模型源自 [WeSpeaker](https://github.com/wenet-e2e/wespeaker) 项目训练的 VoxCeleb ResNet34-LM 模型，遵循 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) 许可协议；流式断句与增量结构化纪要工程设计参考了 [Cicada](https://github.com/wquguru/cicada)（MIT License）。

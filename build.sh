@@ -8,7 +8,7 @@ APPEX_BUNDLE="$APP_BUNDLE/Contents/PlugIns/BoFinderSync.appex"
 
 SDK_PATH="$(xcrun --sdk macosx --show-sdk-path)"
 ARCH="$(uname -m)"
-TARGET="${ARCH}-apple-macos13.0"
+TARGET="${ARCH}-apple-macos26.0"
 
 echo "==> [1/5] Running unit tests..."
 mkdir -p "$BUILD_DIR"
@@ -23,12 +23,25 @@ xcrun swiftc \
     -o "$BUILD_DIR/run_tests"
 
 xcrun swiftc -sdk "$SDK_PATH" -target "$TARGET" \
+    -parse-as-library \
+    -DMEETING_UNIT_TESTS \
+    -framework Cocoa \
+    -framework SwiftUI \
+    -framework Accelerate \
+    -framework CoreML \
+    -framework AVFoundation \
     "$ROOT_DIR/BoFinderApp/MeetingModels.swift" \
+    "$ROOT_DIR/BoFinderApp/MeetingSpeakerID.swift" \
+    "$ROOT_DIR/BoFinderApp/MeetingNotes.swift" \
+    "$ROOT_DIR/BoFinderApp/AppUpdater.swift" \
     "$ROOT_DIR/Tests/MeetingTests.swift" -o "$BUILD_DIR/run_meeting_tests"
 "$BUILD_DIR/run_meeting_tests"
 "$BUILD_DIR/run_tests"
 
 xcrun swiftc -sdk "$SDK_PATH" -target "$TARGET" \
+    -parse-as-library \
+    -framework Speech \
+    -framework AVFoundation \
     "$ROOT_DIR/BoFinderApp/MeetingModels.swift" \
     "$ROOT_DIR/BoFinderApp/MeetingAppleSpeech.swift" \
     "$ROOT_DIR/Tests/MeetingAppleSpeechTests.swift" -o "$BUILD_DIR/run_apple_speech_tests"
@@ -43,9 +56,18 @@ mkdir -p "$APPEX_BUNDLE/Contents/Resources"
 
 cp "$ROOT_DIR/BoFinderApp/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
 cp "$ROOT_DIR/BoFinderSync/Info.plist" "$APPEX_BUNDLE/Contents/Info.plist"
+if [[ -n "${MARKETING_VERSION:-}" ]]; then
+    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $MARKETING_VERSION" "$APP_BUNDLE/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $MARKETING_VERSION" "$APPEX_BUNDLE/Contents/Info.plist"
+fi
+if [[ -n "${BUILD_NUMBER:-}" ]]; then
+    /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$APP_BUNDLE/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$APPEX_BUNDLE/Contents/Info.plist"
+fi
 cp "$ROOT_DIR/BoFinderApp/AppLogo.png" "$APP_BUNDLE/Contents/Resources/AppLogo.png"
 cp "$ROOT_DIR/BoFinderApp/MenuBarLogo.png" "$APP_BUNDLE/Contents/Resources/MenuBarLogo.png"
 cp "$ROOT_DIR/scripts/meeting_worker.py" "$APP_BUNDLE/Contents/Resources/meeting_worker.py"
+cp -R "$ROOT_DIR/BoFinderApp/Resources/SpeakerEmbedding.mlpackage" "$APP_BUNDLE/Contents/Resources/SpeakerEmbedding.mlpackage"
 
 ICONSET_DIR="$BUILD_DIR/AppIcon.iconset"
 xcrun swift "$ROOT_DIR/scripts/generate_icon.swift" "$ICONSET_DIR" "$ROOT_DIR/BoFinderApp/AppLogo.png"
@@ -79,6 +101,13 @@ xcrun swiftc \
     -framework SwiftUI \
     -framework ApplicationServices \
     -framework ServiceManagement \
+    -framework AVFoundation \
+    -framework CoreAudio \
+    -framework AudioToolbox \
+    -framework Speech \
+    -framework CoreML \
+    -framework Accelerate \
+    -framework UniformTypeIdentifiers \
     "$ROOT_DIR/Shared/Models.swift" \
     "$ROOT_DIR/Shared/PathFormatter.swift" \
     "$ROOT_DIR/Shared/SharedStore.swift" \
@@ -96,8 +125,12 @@ xcrun swiftc \
     "$ROOT_DIR/BoFinderApp/MeetingCapture.swift" \
     "$ROOT_DIR/BoFinderApp/MeetingServices.swift" \
     "$ROOT_DIR/BoFinderApp/MeetingAppleSpeech.swift" \
+    "$ROOT_DIR/BoFinderApp/MeetingSpeakerID.swift" \
+    "$ROOT_DIR/BoFinderApp/MeetingNotes.swift" \
+    "$ROOT_DIR/BoFinderApp/MeetingFloatingPanel.swift" \
     "$ROOT_DIR/BoFinderApp/MeetingManager.swift" \
     "$ROOT_DIR/BoFinderApp/MeetingView.swift" \
+    "$ROOT_DIR/BoFinderApp/AppUpdater.swift" \
     "$ROOT_DIR/BoFinderApp/SettingsWindow.swift" \
     "$ROOT_DIR/BoFinderApp/AppDelegate.swift" \
     "$ROOT_DIR/BoFinderApp/main.swift" \

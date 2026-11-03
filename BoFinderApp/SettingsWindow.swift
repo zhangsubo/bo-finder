@@ -6,6 +6,7 @@ struct SettingsView: View {
     @ObservedObject var eventTapManager = EventTapManager.shared
     @ObservedObject var extensionDoctor = FinderExtensionDoctor.shared
     @ObservedObject var hiddenFilesManager = HiddenFilesManager.shared
+    @ObservedObject var appUpdater = AppUpdater.shared
     @StateObject private var shortcutRecorder = ShortcutRecorderController()
 
     @State private var selectedTab: Int = 0
@@ -57,9 +58,9 @@ struct SettingsView: View {
             applyAppearance()
         }
         .onDisappear { shortcutRecorder.stopRecording() }
-        .onChange(of: selectedPage) { _ in shortcutRecorder.stopRecording() }
-        .onChange(of: selectedTab) { _ in shortcutRecorder.stopRecording() }
-        .onChange(of: appearance) { _ in applyAppearance() }
+        .onChange(of: selectedPage) { _, _ in shortcutRecorder.stopRecording() }
+        .onChange(of: selectedTab) { _, _ in shortcutRecorder.stopRecording() }
+        .onChange(of: appearance) { _, _ in applyAppearance() }
     }
 
     private var pageTitle: String {
@@ -861,16 +862,59 @@ struct SettingsView: View {
                         Text("深色").tag("dark")
                     }.padding(12)
                 }
+
+                GroupBox("应用更新（GitHub Release 自动同步）") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Toggle("发现新版本时自动下载并安装（录音期间自动延后）", isOn: Binding(
+                                get: { appUpdater.autoInstallEnabled },
+                                set: { appUpdater.autoInstallEnabled = $0 }
+                            ))
+                            .fontWeight(.semibold)
+                            Spacer()
+                            if appUpdater.isInstalling {
+                                ProgressView(value: appUpdater.downloadProgress)
+                                    .frame(width: 110)
+                            } else if let update = appUpdater.availableUpdate {
+                                Button("立即更新至 v\(update.version)") {
+                                    Task { await appUpdater.install(update, silentRelaunch: false) }
+                                }
+                                .buttonStyle(.borderedProminent)
+                            } else {
+                                Button(appUpdater.isChecking ? "检查中…" : "检查更新") {
+                                    Task { await appUpdater.checkForUpdates(manual: true) }
+                                }
+                                .disabled(appUpdater.isChecking)
+                            }
+                        }
+                        if !appUpdater.statusMessage.isEmpty {
+                            Text(appUpdater.statusMessage)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        if !appUpdater.errorMessage.isEmpty {
+                            Text(appUpdater.errorMessage)
+                                .font(.caption)
+                                .foregroundColor(.red)
+                        }
+                        Text("GitHub Action 每次构建发布新版本后，安装在 /Applications/DeskSide.app 的应用会自动校验 SHA-256 与代码签名并完成热替换更新。")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
                 HStack(spacing: 18) {
                     appLogo(size: 64)
                     VStack(alignment: .leading, spacing: 6) {
                         Text("桌边 · DeskSide").font(.title2).fontWeight(.semibold)
                         Text("需要的时候，就在手边。").foregroundColor(.secondary)
-                        Text("版本 \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.1.0")")
+                        Text("版本 \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.2.0")")
                             .font(.caption).foregroundColor(.secondary)
                     }
                 }.padding(.vertical, 12)
-                Text("文件工具承接 BoFinder，原有功能与设置继续保留。关闭窗口后，DeskSide 仍在菜单栏运行。")
+                Text("文件工具承接 BoFinder，原有功能与设置继续保留。关闭窗口后，DeskSide 仍在菜单栏运行。\n会议助手内置声纹识别模型基于 WeSpeaker ResNet34-LM（VoxCeleb 数据集训练，CC BY 4.0 许可），实时纪要与悬浮窗设计参考开源项目 Cicada（MIT）。")
                     .font(.caption).foregroundColor(.secondary)
             }.padding(26).frame(maxWidth: .infinity, alignment: .leading)
         }

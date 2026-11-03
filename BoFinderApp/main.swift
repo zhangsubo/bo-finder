@@ -9,7 +9,7 @@ let peers = NSRunningApplication.runningApplications(withBundleIdentifier: "com.
     .filter { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
 for peer in peers {
     if peer.executableURL?.lastPathComponent == "DeskSide" {
-        peer.activate(options: [.activateIgnoringOtherApps])
+        peer.activate()
         exit(0)
     }
     guard peer.terminate() else {

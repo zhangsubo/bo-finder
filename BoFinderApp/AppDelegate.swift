@@ -15,9 +15,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setupApplicationMenu()
         MeetingManager.shared.activate()
         MeetingManager.shared.onRecordingChanged = { [weak self] in
-            self?.meetingIsRecording = MeetingManager.shared.active != nil
+            let isRec = MeetingManager.shared.active != nil
+            self?.meetingIsRecording = isRec
             self?.updateStatusItemAppearance()
+            if !isRec {
+                AppUpdater.shared.notifyMeetingRecordingEnded()
+            }
         }
+        AppUpdater.shared.start()
 
         CutPasteManager.shared.onStateUpdated = { [weak self] in
             DispatchQueue.main.async {
@@ -37,13 +42,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         updateStatusItemAppearance()
 
-        HUDWindowController.shared.show(
-            title: "DeskSide 已启动",
-            subtitle: EventTapManager.shared.isEventTapRunning ? "文件工具已就绪" : "可在权限与诊断中检查文件工具状态",
-            symbolName: "sparkles"
-        )
-
-        SettingsWindowController.shared.showWindow()
+        let silentRelaunch = CommandLine.arguments.contains("--updated-silently")
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.2.0"
+        if silentRelaunch {
+            HUDWindowController.shared.show(
+                title: "DeskSide 已自动更新至 v\(version)",
+                subtitle: "GitHub Action 最新构建已生效",
+                symbolName: "arrow.down.circle.fill"
+            )
+        } else {
+            HUDWindowController.shared.show(
+                title: "DeskSide 已启动",
+                subtitle: EventTapManager.shared.isEventTapRunning ? "文件工具已就绪" : "可在权限与诊断中检查文件工具状态",
+                symbolName: "sparkles"
+            )
+            SettingsWindowController.shared.showWindow()
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -83,6 +97,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(quit)
         root.submenu = menu
         main.addItem(root)
+
+        let editRoot = NSMenuItem()
+        let editMenu = NSMenu(title: "编辑")
+        editMenu.addItem(withTitle: "撤销", action: Selector(("undo:")), keyEquivalent: "z")
+        editMenu.addItem(withTitle: "重做", action: Selector(("redo:")), keyEquivalent: "Z")
+        editMenu.addItem(.separator())
+        editMenu.addItem(withTitle: "剪切", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "拷贝", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "粘贴", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "全选", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editRoot.submenu = editMenu
+        main.addItem(editRoot)
+
         let windowRoot = NSMenuItem()
         let windowMenu = NSMenu(title: "窗口")
         windowMenu.addItem(withTitle: "关闭窗口", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
@@ -392,6 +419,76 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
+        // Meeting Assistant Quick Section
+        let meetingManager = MeetingManager.shared
+        let floatingVisible = MeetingFloatingPanelController.shared.isVisible
+        if let activeID = meetingManager.active,
+           let activeRec = meetingManager.records.first(where: { $0.id == activeID }) {
+            let liveHeader = NSMenuItem(
+                title: "🎙️ 会议录音中 · \(MeetingRecord.shortClock(meetingManager.elapsed))",
+                action: nil,
+                keyEquivalent: ""
+            )
+            liveHeader.isEnabled = false
+            menu.addItem(liveHeader)
+
+            let pauseItem = NSMenuItem(
+                title: activeRec.phase == "paused" ? "继续会议录音" : "暂停会议录音",
+                action: #selector(toggleMeetingPauseFromMenuBar(_:)),
+                keyEquivalent: ""
+            )
+            pauseItem.target = self
+            pauseItem.image = NSImage(systemSymbolName: activeRec.phase == "paused" ? "play.circle" : "pause.circle", accessibilityDescription: nil)
+            menu.addItem(pauseItem)
+
+            let stopItem = NSMenuItem(
+                title: "结束会议并整理纪要",
+                action: #selector(stopMeetingFromMenuBar(_:)),
+                keyEquivalent: ""
+            )
+            stopItem.target = self
+            stopItem.image = NSImage(systemSymbolName: "stop.circle.fill", accessibilityDescription: nil)
+            menu.addItem(stopItem)
+        } else {
+            let startOnlineItem = NSMenuItem(
+                title: "开始线上会议录音（麦克风 + 系统音频）",
+                action: #selector(startOnlineMeetingFromMenuBar(_:)),
+                keyEquivalent: ""
+            )
+            startOnlineItem.target = self
+            startOnlineItem.image = NSImage(systemSymbolName: "person.2.wave.2", accessibilityDescription: nil)
+            menu.addItem(startOnlineItem)
+
+            let startOfflineItem = NSMenuItem(
+                title: "开始线下会议录音（仅麦克风）",
+                action: #selector(startOfflineMeetingFromMenuBar(_:)),
+                keyEquivalent: ""
+            )
+            startOfflineItem.target = self
+            startOfflineItem.image = NSImage(systemSymbolName: "mic", accessibilityDescription: nil)
+            menu.addItem(startOfflineItem)
+        }
+
+        let togglePanelItem = NSMenuItem(
+            title: floatingVisible ? "隐藏桌边实时纪要悬浮窗" : "打开桌边实时纪要悬浮窗（投屏隐身）",
+            action: #selector(toggleMeetingFloatingPanelFromMenuBar(_:)),
+            keyEquivalent: ""
+        )
+        togglePanelItem.target = self
+        togglePanelItem.state = floatingVisible ? .on : .off
+        togglePanelItem.image = NSImage(systemSymbolName: "sidebar.right", accessibilityDescription: nil)
+        menu.addItem(togglePanelItem)
+
+        let openMeetingsItem = NSMenuItem(
+            title: "打开会议助手…",
+            action: #selector(openMeetingsPageFromMenuBar(_:)),
+            keyEquivalent: ""
+        )
+        openMeetingsItem.target = self
+        menu.addItem(openMeetingsItem)
+
+        menu.addItem(NSMenuItem.separator())
+
         let openItem = NSMenuItem(title: "打开 DeskSide", action: #selector(openMainWindow(_:)), keyEquivalent: "")
         openItem.target = self
         menu.addItem(openItem)
@@ -403,6 +500,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         )
         settingsItem.target = self
         menu.addItem(settingsItem)
+
+        let updater = AppUpdater.shared
+        if updater.isInstalling {
+            let installingItem = NSMenuItem(
+                title: "正在自动更新… \(Int(updater.downloadProgress * 100))%",
+                action: nil,
+                keyEquivalent: ""
+            )
+            installingItem.isEnabled = false
+            menu.addItem(installingItem)
+        } else if let update = updater.availableUpdate {
+            let installItem = NSMenuItem(
+                title: "⬇️ 立即更新至 v\(update.version)",
+                action: #selector(installAvailableUpdateFromMenuBar(_:)),
+                keyEquivalent: ""
+            )
+            installItem.target = self
+            menu.addItem(installItem)
+        } else {
+            let checkItem = NSMenuItem(
+                title: updater.isChecking ? "正在检查更新…" : "检查更新…",
+                action: updater.isChecking ? nil : #selector(checkForUpdatesFromMenuBar(_:)),
+                keyEquivalent: ""
+            )
+            checkItem.target = self
+            menu.addItem(checkItem)
+        }
 
         let quitItem = NSMenuItem(
             title: "退出 DeskSide",
@@ -495,8 +619,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         SettingsWindowController.shared.showWindow()
     }
 
+    @objc private func toggleMeetingPauseFromMenuBar(_ sender: Any?) {
+        Task { @MainActor in MeetingManager.shared.pause() }
+    }
+
+    @objc private func stopMeetingFromMenuBar(_ sender: Any?) {
+        Task { @MainActor in await MeetingManager.shared.end() }
+    }
+
+    @objc private func startOnlineMeetingFromMenuBar(_ sender: Any?) {
+        Task { @MainActor in await MeetingManager.shared.start(online: true, source: "线上会议") }
+    }
+
+    @objc private func startOfflineMeetingFromMenuBar(_ sender: Any?) {
+        Task { @MainActor in await MeetingManager.shared.start(online: false) }
+    }
+
+    @objc private func toggleMeetingFloatingPanelFromMenuBar(_ sender: Any?) {
+        Task { @MainActor in MeetingFloatingPanelController.shared.toggle() }
+    }
+
+    @objc private func openMeetingsPageFromMenuBar(_ sender: Any?) {
+        SettingsWindowController.shared.showWindow(page: "meetings")
+    }
+
     @objc private func openSettings(_ sender: Any?) {
         SettingsWindowController.shared.showWindow(page: "settings")
+    }
+
+    @objc private func checkForUpdatesFromMenuBar(_ sender: Any?) {
+        Task { @MainActor in
+            await AppUpdater.shared.checkForUpdates(manual: true)
+            if AppUpdater.shared.availableUpdate != nil {
+                SettingsWindowController.shared.showWindow(page: "settings")
+            } else if !AppUpdater.shared.statusMessage.isEmpty {
+                HUDWindowController.shared.show(
+                    title: "检查更新",
+                    subtitle: AppUpdater.shared.statusMessage,
+                    symbolName: "checkmark.circle"
+                )
+            }
+        }
+    }
+
+    @objc private func installAvailableUpdateFromMenuBar(_ sender: Any?) {
+        Task { @MainActor in
+            if let update = AppUpdater.shared.availableUpdate {
+                await AppUpdater.shared.install(update, silentRelaunch: false)
+            }
+        }
     }
 
     @objc private func quitApp(_ sender: Any?) {

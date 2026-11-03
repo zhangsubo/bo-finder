@@ -28,9 +28,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    import platform
     output = root / "build/run_meeting_cloud_tests"
     output.parent.mkdir(exist_ok=True)
-    subprocess.run(["xcrun", "swiftc", str(root / "BoFinderApp/MeetingModels.swift"), str(root / "BoFinderApp/MeetingServices.swift"), str(root / "Tests/MeetingCloudTests.swift"), "-o", str(output)], check=True)
+    sdk = subprocess.check_output(["xcrun", "--sdk", "macosx", "--show-sdk-path"], text=True).strip()
+    target = f"{platform.machine()}-apple-macos26.0"
+    subprocess.run([
+        "xcrun", "swiftc",
+        "-sdk", sdk,
+        "-target", target,
+        "-parse-as-library",
+        str(root / "BoFinderApp/MeetingModels.swift"),
+        str(root / "BoFinderApp/MeetingServices.swift"),
+        str(root / "Tests/MeetingCloudTests.swift"),
+        "-o", str(output),
+    ], check=True)
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:

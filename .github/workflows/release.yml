@@ -1,0 +1,112 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: deskside-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    name: Test, Build & Publish DeskSide
+    runs-on: macos-26
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Select macOS 26+ Xcode SDK
+        run: |
+          if ! xcrun --sdk macosx --show-sdk-version 2>/dev/null | grep -qE '^(26|27)\.'; then
+            for xc in /Applications/Xcode_26*.app /Applications/Xcode.app; do
+              if [ -d "$xc" ]; then
+                sudo xcode-select -s "$xc"
+                break
+              fi
+            done
+          fi
+          echo "SDK version: $(xcrun --sdk macosx --show-sdk-version)"
+          swift --version
+
+      - name: Resolve release version
+        id: meta
+        run: |
+          BASE_VER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" BoFinderApp/Info.plist)
+          BUILD_NUM=$((100 + GITHUB_RUN_NUMBER))
+          if [[ "${GITHUB_REF:-}" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            VERSION="${TAG#v}"
+          else
+            VERSION="${BASE_VER}.${GITHUB_RUN_NUMBER}"
+            TAG="v${VERSION}"
+          fi
+          ZIP_NAME="DeskSide-${VERSION}-macOS-arm64.zip"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "build_number=$BUILD_NUM" >> "$GITHUB_OUTPUT"
+          echo "zip_name=$ZIP_NAME" >> "$GITHUB_OUTPUT"
+          echo "==> Target release: $TAG (build $BUILD_NUM)"
+
+      - name: Run unit tests, build & sign DeskSide.app
+        env:
+          MARKETING_VERSION: ${{ steps.meta.outputs.version }}
+          BUILD_NUMBER: ${{ steps.meta.outputs.build_number }}
+        run: |
+          ./build.sh
+          python3 scripts/test_meeting_cloud.py
+
+      - name: Package release archive & SHA-256 checksums
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          ZIP_NAME: ${{ steps.meta.outputs.zip_name }}
+        run: |
+          APP="build/DeskSide.app"
+          BUNDLE_ID=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP/Contents/Info.plist")
+          [[ "$BUNDLE_ID" == "com.bofinder.app" ]] || { echo "Unexpected bundle id: $BUNDLE_ID" >&2; exit 1; }
+          codesign --verify --deep --strict "$APP"
+          rm -f build/DeskSide-*.zip build/checksums.txt
+          ditto -c -k --keepParent "$APP" "build/$ZIP_NAME"
+          (cd build && shasum -a 256 "$ZIP_NAME" > checksums.txt)
+          cat build/checksums.txt
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DeskSide-${{ steps.meta.outputs.version }}
+          path: |
+            build/${{ steps.meta.outputs.zip_name }}
+            build/checksums.txt
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          ZIP_NAME: ${{ steps.meta.outputs.zip_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "build/$ZIP_NAME" build/checksums.txt --clobber
+          else
+            gh release create "$TAG" "build/$ZIP_NAME" build/checksums.txt \
+              --target "${GITHUB_SHA}" \
+              --title "DeskSide v${VERSION}" \
+              --generate-notes \
+              --latest
+          fi
+
+      - name: Write summary
+        if: success()
+        run: |
+          echo "### DeskSide v${{ steps.meta.outputs.version }} published ✅" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Tag: \`${{ steps.meta.outputs.tag }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Asset: \`${{ steps.meta.outputs.zip_name }}\`" >> "$GITHUB_STEP_SUMMARY"

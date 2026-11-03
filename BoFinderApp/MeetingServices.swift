@@ -29,15 +29,26 @@ private final class MeetingNoRedirect: NSObject, URLSessionTaskDelegate {
 }
 
 enum MeetingCloud {
-    static func completion(base: String, key: String, model: String, messages: [[String: Any]]) async throws -> String {
+    static func completion(
+        base: String,
+        key: String,
+        model: String,
+        messages: [[String: Any]],
+        temperature: Double? = nil,
+        maxTokens: Int? = nil,
+        timeout: TimeInterval = 180
+    ) async throws -> String {
         guard !model.trimmingCharacters(in: .whitespaces).isEmpty else { throw MeetingFailure.message("请配置模型 ID。") }
         let url = try MeetingFiles.endpoint(base, path: "chat/completions")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.timeoutInterval = 180
+        request.timeoutInterval = timeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if !key.isEmpty { request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization") }
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["model": model, "messages": messages, "stream": false])
+        var payload: [String: Any] = ["model": model, "messages": messages, "stream": false]
+        if let temperature { payload["temperature"] = temperature }
+        if let maxTokens { payload["max_tokens"] = maxTokens }
+        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
         let configuration = URLSessionConfiguration.ephemeral
         configuration.urlCache = nil
         let session = URLSession(configuration: configuration, delegate: MeetingNoRedirect(), delegateQueue: nil)
