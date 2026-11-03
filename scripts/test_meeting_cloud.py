@@ -1,0 +1,46 @@
+"""Run Chat Completions contract checks against an ephemeral loopback-only server."""
+import http.server
+import json
+from pathlib import Path
+import subprocess
+import threading
+
+root = Path(__file__).resolve().parent.parent
+requests = []
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *_):
+        pass
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        requests.append((self.path, body, self.headers.get("Authorization")))
+        kind = self.path.split("/")[1]
+        status = 401 if kind == "unauthorized" else 302 if kind == "redirect" else 200
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        if kind == "redirect":
+            self.send_header("Location", "/leaked/chat/completions")
+        self.end_headers()
+        data = {"choices": [{"message": {"content": "" if kind == "empty" else "测试纪要"}, "finish_reason": "length" if kind == "truncated" else "stop"}]}
+        self.wfile.write(json.dumps(data).encode())
+
+
+if __name__ == "__main__":
+    output = root / "build/run_meeting_cloud_tests"
+    output.parent.mkdir(exist_ok=True)
+    subprocess.run(["xcrun", "swiftc", str(root / "BoFinderApp/MeetingModels.swift"), str(root / "BoFinderApp/MeetingServices.swift"), str(root / "Tests/MeetingCloudTests.swift"), "-o", str(output)], check=True)
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        subprocess.run([str(output), f"http://127.0.0.1:{server.server_port}"], check=True)
+        assert len(requests) == 5, "Redirect must not forward credentials"
+        for path, body, authorization in requests:
+            assert path.endswith("/chat/completions")
+            assert body == {"model": "test-model", "messages": [{"role": "user", "content": "测试转录"}], "stream": False}
+            assert authorization == "Bearer test-only"
+        print("Request schema and no-redirect credential protection passed")
+    finally:
+        server.shutdown()
+        server.server_close()

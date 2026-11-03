@@ -34,7 +34,7 @@ struct SettingsView: View {
                     case "gateway":
                         comingSoon(title: "安全网关", symbol: "checkmark.shield", detail: "通过手机确认 Agent 的敏感操作。", note: "让每一次授权，都由你决定。")
                     case "meetings":
-                        comingSoon(title: "会议助手", symbol: "mic", detail: "自动记录线上与线下讨论重点。", note: "专注倾听，纪要交给我们。")
+                        MeetingView()
                     case "settings": globalSettings
                     default: fileTools
                     }
@@ -83,7 +83,7 @@ struct SettingsView: View {
             Text("我的工具").font(.caption).foregroundColor(.secondary).padding(.horizontal, 10).padding(.bottom, 5)
             sidebarButton("文件工具", symbol: "folder", page: "files")
             sidebarButton("安全网关", symbol: "checkmark.shield", page: "gateway", upcoming: true)
-            sidebarButton("会议助手", symbol: "mic", page: "meetings", upcoming: true)
+            sidebarButton("会议助手", symbol: "mic", page: "meetings")
             Spacer(minLength: 20)
             Divider().padding(.bottom, 6)
             sidebarButton("设置与关于", symbol: "gearshape", page: "settings")

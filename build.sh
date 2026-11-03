@@ -22,7 +22,17 @@ xcrun swiftc \
     "$ROOT_DIR/Tests/PathFormatterTests.swift" \
     -o "$BUILD_DIR/run_tests"
 
+xcrun swiftc -sdk "$SDK_PATH" -target "$TARGET" \
+    "$ROOT_DIR/BoFinderApp/MeetingModels.swift" \
+    "$ROOT_DIR/Tests/MeetingTests.swift" -o "$BUILD_DIR/run_meeting_tests"
+"$BUILD_DIR/run_meeting_tests"
 "$BUILD_DIR/run_tests"
+
+xcrun swiftc -sdk "$SDK_PATH" -target "$TARGET" \
+    "$ROOT_DIR/BoFinderApp/MeetingModels.swift" \
+    "$ROOT_DIR/BoFinderApp/MeetingAppleSpeech.swift" \
+    "$ROOT_DIR/Tests/MeetingAppleSpeechTests.swift" -o "$BUILD_DIR/run_apple_speech_tests"
+"$BUILD_DIR/run_apple_speech_tests"
 
 echo "==> [2/5] Preparing bundle directories..."
 rm -rf "$APP_BUNDLE"
@@ -35,6 +45,7 @@ cp "$ROOT_DIR/BoFinderApp/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
 cp "$ROOT_DIR/BoFinderSync/Info.plist" "$APPEX_BUNDLE/Contents/Info.plist"
 cp "$ROOT_DIR/BoFinderApp/AppLogo.png" "$APP_BUNDLE/Contents/Resources/AppLogo.png"
 cp "$ROOT_DIR/BoFinderApp/MenuBarLogo.png" "$APP_BUNDLE/Contents/Resources/MenuBarLogo.png"
+cp "$ROOT_DIR/scripts/meeting_worker.py" "$APP_BUNDLE/Contents/Resources/meeting_worker.py"
 
 ICONSET_DIR="$BUILD_DIR/AppIcon.iconset"
 xcrun swift "$ROOT_DIR/scripts/generate_icon.swift" "$ICONSET_DIR" "$ROOT_DIR/BoFinderApp/AppLogo.png"
@@ -81,6 +92,12 @@ xcrun swiftc \
     "$ROOT_DIR/BoFinderApp/QuickPopupMenuController.swift" \
     "$ROOT_DIR/BoFinderApp/CloudQuickBarController.swift" \
     "$ROOT_DIR/BoFinderApp/EventTapManager.swift" \
+    "$ROOT_DIR/BoFinderApp/MeetingModels.swift" \
+    "$ROOT_DIR/BoFinderApp/MeetingCapture.swift" \
+    "$ROOT_DIR/BoFinderApp/MeetingServices.swift" \
+    "$ROOT_DIR/BoFinderApp/MeetingAppleSpeech.swift" \
+    "$ROOT_DIR/BoFinderApp/MeetingManager.swift" \
+    "$ROOT_DIR/BoFinderApp/MeetingView.swift" \
     "$ROOT_DIR/BoFinderApp/SettingsWindow.swift" \
     "$ROOT_DIR/BoFinderApp/AppDelegate.swift" \
     "$ROOT_DIR/BoFinderApp/main.swift" \

@@ -4,6 +4,7 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private let statusMenu = NSMenu()
+    private var meetingIsRecording = false
     private lazy var menuBarLogoImage: NSImage? = makeMenuBarLogoImage()
     private lazy var dockLogoImage: NSImage? = makeRoundedLogoImage(pointSize: 256, cornerRadius: 56)
 
@@ -12,6 +13,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         LaunchAtLoginManager.shared.syncWithConfig()
         setupStatusItem()
         setupApplicationMenu()
+        MeetingManager.shared.activate()
+        MeetingManager.shared.onRecordingChanged = { [weak self] in
+            self?.meetingIsRecording = MeetingManager.shared.active != nil
+            self?.updateStatusItemAppearance()
+        }
 
         CutPasteManager.shared.onStateUpdated = { [weak self] in
             DispatchQueue.main.async {
@@ -42,7 +48,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard MeetingManager.shared.active != nil else { return .terminateNow }
+        let alert = NSAlert()
+        alert.messageText = "会议正在录音"
+        alert.informativeText = "结束并保存当前录音后退出？转录可以下次打开时重试。"
+        alert.addButton(withTitle: "保存并退出")
+        alert.addButton(withTitle: "继续录音")
+        guard alert.runModal() == .alertFirstButtonReturn else { return .terminateCancel }
+        Task { await MeetingManager.shared.end(process: false); sender.reply(toApplicationShouldTerminate: true) }
+        return .terminateLater
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
+        MeetingProcessRegistry.shared.terminateAll()
         CutPasteManager.shared.clearCut(showHUD: false)
     }
 
@@ -143,7 +162,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         button.imagePosition = .imageLeading
 
-        if state.isCutActive && !state.cutFilePaths.isEmpty {
+        if meetingIsRecording {
+            button.title = " ● 录音"
+        } else if state.isCutActive && !state.cutFilePaths.isEmpty {
             button.title = " ✂️\(state.cutFilePaths.count)"
         } else {
             button.title = ""
