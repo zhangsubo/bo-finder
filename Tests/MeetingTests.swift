@@ -250,6 +250,17 @@ struct MeetingTests {
             "Parses SHA-256 digest from shasum checksums.txt"
         )
 
+        // 11. API Key masking (first 8 + *** + last 4) & remote /models list parsing
+        check(MeetingKeyMask.format("sk-1234567890abcdef") == "sk-12345***cdef", "Saved API key displays first 8 + *** + last 4 mask")
+        check(MeetingKeyMask.format("  mimo_key_abcdefgh9876  ") == "mimo_key***9876", "Trims whitespace before applying 8+***+4 mask")
+        check(MeetingKeyMask.format("shortkey") == "sh***ey", "Short keys never expose full string")
+        check(MeetingKeyMask.format("") == "", "Empty key formats as empty string")
+
+        let openAIModelsJSON = #"{"object":"list","data":[{"id":"mimo-v2.6-flash","object":"model"},{"id":"mimo-v2-omni","object":"model"},{"id":"mimo-v2.6-flash","object":"model"}]}"#.data(using: .utf8)!
+        check(MeetingModelListParser.parse(openAIModelsJSON) == ["mimo-v2.6-flash", "mimo-v2-omni"], "Parses and deduplicates OpenAI /v1/models response")
+        let altModelsJSON = #"{"models":[{"name":"models/gemini-2.5-flash"},{"id":"deepseek-chat"}]}"#.data(using: .utf8)!
+        check(MeetingModelListParser.parse(altModelsJSON) == ["gemini-2.5-flash", "deepseek-chat"], "Parses compatible gateway models response")
+
         print("Meeting tests: \(checks) passed")
     }
 }

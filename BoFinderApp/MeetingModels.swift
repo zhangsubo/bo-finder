@@ -412,3 +412,64 @@ enum MeetingFiles {
         return url.appendingPathComponent(path)
     }
 }
+
+enum MeetingKeyMask {
+    /// Formats a saved API key showing the first 8 characters, `***`, and the last 4 characters.
+    /// Shorter keys fall back to narrower prefixes/suffixes so middle characters are never exposed.
+    static func format(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        let chars = Array(trimmed)
+        if chars.count > 12 {
+            return String(chars.prefix(8)) + "***" + String(chars.suffix(4))
+        } else if chars.count >= 9 {
+            return String(chars.prefix(4)) + "***" + String(chars.suffix(2))
+        } else if chars.count >= 5 {
+            return String(chars.prefix(2)) + "***" + String(chars.suffix(2))
+        } else {
+            return "***"
+        }
+    }
+}
+
+enum MeetingModelListParser {
+    /// Extracts unique model IDs from OpenAI-compatible `/v1/models` responses.
+    static func parse(_ data: Data) -> [String] {
+        guard let root = try? JSONSerialization.jsonObject(with: data) else { return [] }
+        var rawItems: [Any] = []
+        if let dict = root as? [String: Any] {
+            if let dataArr = dict["data"] as? [Any] {
+                rawItems = dataArr
+            } else if let modelsArr = dict["models"] as? [Any] {
+                rawItems = modelsArr
+            }
+        } else if let arr = root as? [Any] {
+            rawItems = arr
+        }
+
+        var seen = Set<String>()
+        var result: [String] = []
+        for item in rawItems {
+            let candidate: String?
+            if let str = item as? String {
+                candidate = str
+            } else if let obj = item as? [String: Any] {
+                if let id = obj["id"] as? String, !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    candidate = id
+                } else if let name = obj["name"] as? String {
+                    candidate = name.hasPrefix("models/") ? String(name.dropFirst("models/".count)) : name
+                } else {
+                    candidate = nil
+                }
+            } else {
+                candidate = nil
+            }
+            if let trimmed = candidate?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !trimmed.isEmpty,
+               seen.insert(trimmed).inserted {
+                result.append(trimmed)
+            }
+        }
+        return result
+    }
+}

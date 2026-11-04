@@ -12,6 +12,14 @@ struct MeetingCloudTests {
                 fatalError("Accepted invalid response: \(path)")
             } catch { print("✅ Rejected \(path)") }
         }
-        print("Cloud contract: 5 cases passed")
+        let models = try await MeetingCloud.fetchModels(base: base + "/ok", key: "test-only")
+        precondition(models == ["mimo-v2.6-flash", "mimo-v2-omni"])
+        for path in ["unauthorized", "redirect"] {
+            do {
+                _ = try await MeetingCloud.fetchModels(base: base + "/" + path, key: "test-only")
+                fatalError("Accepted invalid /models response: \(path)")
+            } catch { print("✅ Rejected /models \(path)") }
+        }
+        print("Cloud contract: 8 cases passed")
     }
 }

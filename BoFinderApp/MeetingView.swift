@@ -427,8 +427,6 @@ private struct MeetingSettingsView: View {
     @State private var tab = 0
     @State private var appDetectionExpanded = false
     @State private var legacyEngineExpanded = false
-    @State private var summaryKey = ""
-    @State private var asrKey = ""
     @State private var message = ""
     @State private var testing = false
     @State private var preparingSpeech = false
@@ -580,11 +578,15 @@ private struct MeetingSettingsView: View {
                 Text("注意：云端音频模式会将录音分段上传至所填接口，且不含实时预览。")
                     .font(.caption)
                     .foregroundColor(.orange)
-                TextField("云端 ASR Base URL", text: binding(\.asrBase)).textFieldStyle(.roundedBorder)
-                TextField("ASR 模型 ID", text: binding(\.asrModel)).textFieldStyle(.roundedBorder)
-                SecureField("新的 ASR API Key（留空保留已有）", text: $asrKey)
-                Button("保存 ASR 密钥") { saveSecret(asrKey, account: "asr"); asrKey = "" }
-                    .disabled(asrKey.isEmpty)
+                MeetingEndpointConfigSection(
+                    account: "asr",
+                    basePlaceholder: "云端 ASR Base URL，如 https://api.xiaomimimo.com/v1",
+                    modelPlaceholder: "ASR 模型 ID，如 mimo-v2.5-asr",
+                    baseURL: binding(\.asrBase),
+                    modelID: binding(\.asrModel),
+                    onFeedback: { message = $0 },
+                    onSavedOrModelChanged: {}
+                )
             }
 
             DisclosureGroup("高级 / 旧版外部 Python X-ASR 环境配置", isExpanded: $legacyEngineExpanded) {
@@ -621,19 +623,19 @@ private struct MeetingSettingsView: View {
         VStack(alignment: .leading, spacing: 18) {
             section("通用 OpenAI 兼容大模型（实时纪要 + 会后完整版 + 说话人认名）")
             Toggle("会中每 45 秒自动增量更新实时结构化纪要", isOn: binding(\.enableLiveNotes))
-            TextField("OpenAI 兼容 Base URL，如 https://api.deepseek.com/v1", text: binding(\.summaryBase))
-                .textFieldStyle(.roundedBorder)
-            TextField("模型 ID，如 deepseek-chat / gpt-4o-mini / qwen-plus", text: binding(\.summaryModel))
-                .textFieldStyle(.roundedBorder)
-            HStack {
-                SecureField("新的 API Key（留空保留 Keychain 中已有密钥）", text: $summaryKey)
-                Button("保存密钥") {
-                    saveSecret(summaryKey, account: "summary")
-                    summaryKey = ""
+
+            MeetingEndpointConfigSection(
+                account: "summary",
+                basePlaceholder: "OpenAI 兼容 Base URL，如 https://token-plan-cn.xiaomimimo.com/v1",
+                modelPlaceholder: "模型 ID，如 mimo-v2.6-flash / deepseek-chat / gpt-4o-mini",
+                baseURL: binding(\.summaryBase),
+                modelID: binding(\.summaryModel),
+                onFeedback: { message = $0 },
+                onSavedOrModelChanged: {
                     MeetingNotesEngine.shared.updateNow()
                 }
-                .disabled(summaryKey.isEmpty)
-            }
+            )
+
             Button(testing ? "测试连接中…" : "测试模型连接") {
                 testing = true
                 let config = manager.config
@@ -652,7 +654,7 @@ private struct MeetingSettingsView: View {
                     testing = false
                 }
             }
-            .disabled(testing)
+            .disabled(testing || manager.config.summaryBase.trimmingCharacters(in: .whitespaces).isEmpty || manager.config.summaryModel.trimmingCharacters(in: .whitespaces).isEmpty)
 
             section("纯文本回退纪要模板")
             TextEditor(text: binding(\.template))
@@ -685,15 +687,6 @@ private struct MeetingSettingsView: View {
         }
     }
 
-    private func saveSecret(_ value: String, account: String) {
-        do {
-            try MeetingSecrets.write(value, account: account)
-            message = "密钥已安全保存到 macOS Keychain。"
-        } catch {
-            message = error.localizedDescription
-        }
-    }
-
     private func choose(folder: Bool, path: WritableKeyPath<MeetingConfiguration, String>) {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = folder
@@ -702,6 +695,264 @@ private struct MeetingSettingsView: View {
         if panel.runModal() == .OK, let url = panel.url {
             manager.config[keyPath: path] = url.path
             manager.saveConfiguration()
+        }
+    }
+}
+
+/// Reusable 3-step endpoint configurator:
+/// 1) Base URL  ->  2) API Key (masked as first-8 + `***` + last-4 once saved) + Save & Fetch  ->  3) Remote Model ID picker / manual override.
+private struct MeetingEndpointConfigSection: View {
+    let account: String
+    let basePlaceholder: String
+    let modelPlaceholder: String
+    @Binding var baseURL: String
+    @Binding var modelID: String
+    let onFeedback: (String) -> Void
+    let onSavedOrModelChanged: () -> Void
+
+    @State private var savedKey: String = ""
+    @State private var keyInput: String = ""
+    @State private var editingKey: Bool = false
+    @State private var remoteModels: [String] = []
+    @State private var fetchingModels: Bool = false
+    @State private var manualModelInput: Bool = false
+    @State private var didAutoFetchOnAppear: Bool = false
+
+    private var trimmedBase: String {
+        baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var trimmedKeyInput: String {
+        keyInput.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var isLocalLoopback: Bool {
+        guard let url = URL(string: trimmedBase), let host = url.host else { return false }
+        return ["localhost", "127.0.0.1", "::1"].contains(host)
+    }
+
+    private var effectiveModels: [String] {
+        let current = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !remoteModels.isEmpty else { return [] }
+        if !current.isEmpty && !remoteModels.contains(current) {
+            return [current] + remoteModels
+        }
+        return remoteModels
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // Step 1: Base URL
+            VStack(alignment: .leading, spacing: 5) {
+                Text("接口地址（Base URL）")
+                    .font(.caption.weight(.medium))
+                    .foregroundColor(.secondary)
+                TextField(basePlaceholder, text: $baseURL)
+                    .textFieldStyle(.roundedBorder)
+            }
+
+            // Step 2: API Key (masked when already saved) + Save & Fetch button
+            VStack(alignment: .leading, spacing: 5) {
+                Text("API Key（密钥）")
+                    .font(.caption.weight(.medium))
+                    .foregroundColor(.secondary)
+
+                HStack(spacing: 8) {
+                    if !savedKey.isEmpty && !editingKey {
+                        HStack(spacing: 8) {
+                            Image(systemName: "key.fill")
+                                .font(.caption)
+                                .foregroundColor(.green)
+                            Text(MeetingKeyMask.format(savedKey))
+                                .font(.system(.body, design: .monospaced))
+                                .foregroundColor(.primary)
+                                .lineLimit(1)
+                            Spacer()
+                            Text("已保存")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Capsule().fill(Color.secondary.opacity(0.12)))
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(Color(nsColor: .textBackgroundColor))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(Color.secondary.opacity(0.28), lineWidth: 1)
+                        )
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            keyInput = ""
+                            editingKey = true
+                        }
+                        .help("点击修改 API Key")
+
+                        Button("修改密钥") {
+                            keyInput = ""
+                            editingKey = true
+                        }
+
+                        Button(fetchingModels ? "拉取中…" : "保存并拉取模型") {
+                            saveAndFetch()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(trimmedBase.isEmpty || fetchingModels)
+                    } else {
+                        SecureField(
+                            savedKey.isEmpty
+                                ? "输入 API Key（仅加密保存于 macOS Keychain）"
+                                : "输入新的 API Key（当前：\(MeetingKeyMask.format(savedKey))）",
+                            text: $keyInput
+                        )
+                        .textFieldStyle(.roundedBorder)
+
+                        if !savedKey.isEmpty {
+                            Button("取消") {
+                                keyInput = ""
+                                editingKey = false
+                            }
+                        }
+
+                        Button(fetchingModels ? "拉取中…" : "保存并拉取模型") {
+                            saveAndFetch()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(fetchingModels || trimmedBase.isEmpty || (trimmedKeyInput.isEmpty && savedKey.isEmpty && !isLocalLoopback))
+                    }
+                }
+            }
+
+            // Step 3: Model ID (remote dropdown after save/fetch, with manual input fallback)
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 6) {
+                    Text("模型 ID")
+                        .font(.caption.weight(.medium))
+                        .foregroundColor(.secondary)
+                    if !remoteModels.isEmpty {
+                        Text("已从远端拉取 \(remoteModels.count) 个模型")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                HStack(spacing: 8) {
+                    if !effectiveModels.isEmpty && !manualModelInput {
+                        Picker("模型 ID", selection: Binding(
+                            get: { modelID },
+                            set: { newVal in
+                                modelID = newVal
+                                onSavedOrModelChanged()
+                            }
+                        )) {
+                            ForEach(effectiveModels, id: \.self) { id in
+                                Text(id).tag(id)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                        Button(fetchingModels ? "刷新中…" : "刷新列表") {
+                            Task { await fetchRemoteModels(silent: false, autoSelectIfEmpty: true) }
+                        }
+                        .disabled(fetchingModels || trimmedBase.isEmpty)
+
+                        Button("手动输入") {
+                            manualModelInput = true
+                        }
+                    } else {
+                        TextField(modelPlaceholder, text: Binding(
+                            get: { modelID },
+                            set: { newVal in
+                                modelID = newVal
+                                onSavedOrModelChanged()
+                            }
+                        ))
+                        .textFieldStyle(.roundedBorder)
+
+                        Button(fetchingModels ? "拉取中…" : "拉取远端模型") {
+                            Task {
+                                await fetchRemoteModels(silent: false, autoSelectIfEmpty: true)
+                                if !remoteModels.isEmpty {
+                                    manualModelInput = false
+                                }
+                            }
+                        }
+                        .disabled(fetchingModels || trimmedBase.isEmpty || (savedKey.isEmpty && !isLocalLoopback))
+
+                        if !remoteModels.isEmpty {
+                            Button("从列表选择") {
+                                manualModelInput = false
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .onAppear {
+            savedKey = MeetingSecrets.read(account)
+            editingKey = savedKey.isEmpty
+            if !didAutoFetchOnAppear {
+                didAutoFetchOnAppear = true
+                if !trimmedBase.isEmpty && (!savedKey.isEmpty || isLocalLoopback) {
+                    Task { await fetchRemoteModels(silent: true, autoSelectIfEmpty: true) }
+                }
+            }
+        }
+    }
+
+    private func saveAndFetch() {
+        if !trimmedKeyInput.isEmpty {
+            do {
+                try MeetingSecrets.write(trimmedKeyInput, account: account)
+                savedKey = MeetingSecrets.read(account)
+                keyInput = ""
+                editingKey = false
+            } catch {
+                onFeedback(error.localizedDescription)
+                return
+            }
+        } else {
+            editingKey = false
+        }
+        MeetingManager.shared.saveConfiguration()
+        onSavedOrModelChanged()
+        Task {
+            await fetchRemoteModels(silent: false, autoSelectIfEmpty: true)
+            if !remoteModels.isEmpty {
+                manualModelInput = false
+            }
+        }
+    }
+
+    @MainActor
+    private func fetchRemoteModels(silent: Bool, autoSelectIfEmpty: Bool) async {
+        guard !trimmedBase.isEmpty else {
+            if !silent { onFeedback("请先填写接口地址（Base URL）。") }
+            return
+        }
+        fetchingModels = true
+        defer { fetchingModels = false }
+        let key = MeetingSecrets.read(account)
+        do {
+            let models = try await MeetingCloud.fetchModels(base: trimmedBase, key: key)
+            remoteModels = models
+            let current = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
+            if autoSelectIfEmpty && current.isEmpty, let first = models.first {
+                modelID = first
+                onSavedOrModelChanged()
+            }
+            if !silent {
+                onFeedback("已保存配置并从远端拉取 \(models.count) 个可用模型。")
+            }
+        } catch {
+            if !silent {
+                onFeedback("配置已保存，但\(error.localizedDescription)")
+            }
         }
     }
 }
