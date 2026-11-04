@@ -7,11 +7,24 @@ import threading
 
 root = Path(__file__).resolve().parent.parent
 requests = []
+get_requests = []
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
+
+    def do_GET(self):
+        get_requests.append((self.path, self.headers.get("Authorization")))
+        kind = self.path.split("/")[1]
+        status = 401 if kind == "unauthorized" else 302 if kind == "redirect" else 200
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        if kind == "redirect":
+            self.send_header("Location", "/leaked/models")
+        self.end_headers()
+        data = {"object": "list", "data": [{"id": "mimo-v2.6-flash"}, {"id": "mimo-v2-omni"}]}
+        self.wfile.write(json.dumps(data).encode())
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -51,6 +64,10 @@ if __name__ == "__main__":
         for path, body, authorization in requests:
             assert path.endswith("/chat/completions")
             assert body == {"model": "test-model", "messages": [{"role": "user", "content": "测试转录"}], "stream": False}
+            assert authorization == "Bearer test-only"
+        assert len(get_requests) == 3, "Redirect on /models must not forward credentials"
+        for path, authorization in get_requests:
+            assert path.endswith("/models")
             assert authorization == "Bearer test-only"
         print("Request schema and no-redirect credential protection passed")
     finally:

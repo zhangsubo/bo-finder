@@ -29,6 +29,43 @@ private final class MeetingNoRedirect: NSObject, URLSessionTaskDelegate {
 }
 
 enum MeetingCloud {
+    static func fetchModels(
+        base: String,
+        key: String,
+        timeout: TimeInterval = 15
+    ) async throws -> [String] {
+        let url = try MeetingFiles.endpoint(base, path: "models")
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = timeout
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if !key.isEmpty {
+            request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.urlCache = nil
+        let session = URLSession(configuration: configuration, delegate: MeetingNoRedirect(), delegateQueue: nil)
+        defer { session.invalidateAndCancel() }
+        let (data, response) = try await session.data(for: request)
+        guard let response = response as? HTTPURLResponse else {
+            throw MeetingFailure.message("模型服务没有返回有效 HTTP 响应。")
+        }
+        if response.statusCode == 401 || response.statusCode == 403 {
+            throw MeetingFailure.message("拉取模型列表失败（HTTP \(response.statusCode)）：API Key 无效或无权限。")
+        }
+        if response.statusCode == 404 {
+            throw MeetingFailure.message("该服务未提供 /models 模型列表接口（HTTP 404），可手动输入模型 ID。")
+        }
+        guard (200..<300).contains(response.statusCode) else {
+            throw MeetingFailure.message("拉取模型列表失败（HTTP \(response.statusCode)），请检查地址与密钥，或手动输入模型 ID。")
+        }
+        let models = MeetingModelListParser.parse(data)
+        guard !models.isEmpty else {
+            throw MeetingFailure.message("远端未返回可用模型列表，可手动输入模型 ID。")
+        }
+        return models
+    }
+
     static func completion(
         base: String,
         key: String,
