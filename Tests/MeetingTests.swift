@@ -261,6 +261,145 @@ struct MeetingTests {
         let altModelsJSON = #"{"models":[{"name":"models/gemini-2.5-flash"},{"id":"deepseek-chat"}]}"#.data(using: .utf8)!
         check(MeetingModelListParser.parse(altModelsJSON) == ["gemini-2.5-flash", "deepseek-chat"], "Parses compatible gateway models response")
 
+        // 12. Regression tests: Tencent Meeting / helper process auto-start & auto-end lifecycle
+        let realRunningWithHelpers: Set<String> = [
+            "com.bofinder.app",
+            "com.tencent.meeting",
+            "com.tencent.meeting.services.wmexternal",
+            "com.electron.lark",
+            "com.electron.lark.helper",
+            "com.tencent.xinWeChat",
+            "com.tencent.flue.helper.plugin",
+        ]
+        check(
+            MeetingDetector.ownerBundle(of: "com.tencent.meeting.services.wmexternal", running: realRunningWithHelpers) == "com.tencent.meeting",
+            "Helper bundle wmexternal resolves to parent com.tencent.meeting even when helper is in runningApplications"
+        )
+        check(
+            MeetingDetector.ownerBundle(of: "com.electron.lark.helper", running: realRunningWithHelpers) == "com.electron.lark",
+            "Feishu helper resolves to parent com.electron.lark even when helper is in runningApplications"
+        )
+        check(
+            MeetingDetector.ownerBundle(
+                of: "com.tencent.flue.helper.plugin",
+                executablePath: "/Applications/WeChat.app/Contents/MacOS/WeChatAppEx.app/Contents/Frameworks/WeChatAppEx Framework.framework/Helpers/WeChatAppEx Helper (Plugin).app/Contents/MacOS/WeChatAppEx Helper (Plugin)",
+                running: realRunningWithHelpers,
+                appBundleIDResolver: { $0 == "/Applications/WeChat.app" ? "com.tencent.xinWeChat" : nil }
+            ) == "com.tencent.xinWeChat",
+            "Non-prefixed helper bundle resolves to WeChat via outermost .app executable path"
+        )
+        check(
+            MeetingDetector.ownerBundle(
+                of: "",
+                executablePath: "/Applications/TencentMeeting.app/Contents/Frameworks/WeMeetFramework.framework/Versions/3.47.2.407/Frameworks/wmexternal.app/Contents/MacOS/wmexternal",
+                running: realRunningWithHelpers,
+                appBundleIDResolver: { $0 == "/Applications/TencentMeeting.app" ? "com.tencent.meeting" : nil }
+            ) == "com.tencent.meeting",
+            "Empty CoreAudio bundle ID resolves to Tencent Meeting via outermost .app executable path"
+        )
+
+        // Mic permission gate: .notDetermined must proceed and prompt (not silently suppress auto-start)
+        check(
+            MeetingAutoRecordingPolicy.micPermissionGate(status: .notDetermined, microphone: "default") == .proceed
+                && MeetingAutoRecordingPolicy.micPermissionGate(status: .authorized, microphone: "default") == .proceed
+                && MeetingAutoRecordingPolicy.micPermissionGate(status: .denied, microphone: "default") == .denied
+                && MeetingAutoRecordingPolicy.micPermissionGate(status: .denied, microphone: "off") == .proceed,
+            "Auto-start mic permission gate prompts on .notDetermined and only blocks when explicitly denied"
+        )
+
+        // Scenario A: Tencent Meeting unmuted start -> brief AirPods switch -> hang-up auto-end
+        var autoConfig = MeetingConfiguration()
+        autoConfig.automatic = true
+        var snapRunning = realRunningWithHelpers
+        var snapProcesses: [MeetingAudioProcessSample] = []
+        let detector = MeetingDetector {
+            MeetingDetector.Snapshot(
+                runningBundles: snapRunning,
+                ownBundle: "com.bofinder.app",
+                processes: snapProcesses
+            )
+        }
+        snapProcesses = [MeetingAudioProcessSample(bundleID: "com.tencent.meeting", input: true, output: true)]
+        check(detector.poll(config: autoConfig, now: 10.0) == (nil, false), "Initial call sample begins timing window")
+        check(detector.poll(config: autoConfig, now: 12.1) == ("com.tencent.meeting", false), "Sustained >=2s Tencent Meeting audio auto-starts recording")
+        // Simulate 1.2s device switch dropout (<2.0s grace)
+        snapProcesses = []
+        check(detector.poll(config: autoConfig, isRecordingOnline: true, now: 30.0) == (nil, false), "Brief device switch dropout starts grace timer without ending")
+        check(detector.poll(config: autoConfig, isRecordingOnline: true, now: 31.2) == (nil, false), "1.2s Bluetooth/AirPods switch stays within grace window")
+        snapProcesses = [MeetingAudioProcessSample(bundleID: "com.tencent.meeting", input: false, output: true)]
+        check(detector.poll(config: autoConfig, isRecordingOnline: true, now: 31.5) == (nil, false), "Resumed speaker output cancels hang-up grace timer")
+        // Simulate real meeting hang-up: must auto-end promptly within ~2.1s (before user thinks it got stuck!)
+        snapProcesses = []
+        _ = detector.poll(config: autoConfig, isRecordingOnline: true, now: 50.0)
+        check(detector.poll(config: autoConfig, isRecordingOnline: true, now: 52.1) == (nil, true), "Leaving Tencent Meeting auto-ends promptly after >=2.0s")
+
+        // Scenario A2: Quitting Tencent Meeting app completely (⌘Q) must auto-end immediately (0s wait)
+        snapProcesses = [MeetingAudioProcessSample(bundleID: "com.tencent.meeting", input: true, output: true)]
+        _ = detector.poll(config: autoConfig, now: 60.0)
+        check(detector.poll(config: autoConfig, now: 62.1) == ("com.tencent.meeting", false), "Second Tencent Meeting starts")
+        snapProcesses = []
+        snapRunning.remove("com.tencent.meeting")
+        check(detector.poll(config: autoConfig, isRecordingOnline: true, now: 70.0) == (nil, true), "Quitting Tencent Meeting app auto-ends immediately without grace delay")
+        snapRunning.insert("com.tencent.meeting")
+
+        // Scenario B: Joining Tencent Meeting with mic muted ("入会静音": input=false, output=true)
+        // Brief 1.5s notification chime must NOT start recording
+        snapProcesses = [MeetingAudioProcessSample(bundleID: "com.tencent.meeting", input: false, output: true)]
+        check(detector.poll(config: autoConfig, now: 100.0) == (nil, false), "Short notification chime tick 1 does not start")
+        check(detector.poll(config: autoConfig, now: 101.5) == (nil, false), "Short notification chime <4.5s does not start")
+        snapProcesses = []
+        check(detector.poll(config: autoConfig, now: 102.5) == (nil, false), "Ended notification chime resets timer")
+        // Entering muted Tencent Meeting room keeps output open >=4.5s -> MUST auto-start and later auto-end
+        snapProcesses = [MeetingAudioProcessSample(bundleID: "com.tencent.meeting", input: false, output: true)]
+        _ = detector.poll(config: autoConfig, now: 110.0)
+        check(detector.poll(config: autoConfig, now: 114.6) == ("com.tencent.meeting", false), "Muted-mic Tencent Meeting auto-starts after >=4.5s sustained output")
+        snapProcesses = []
+        _ = detector.poll(config: autoConfig, isRecordingOnline: true, now: 200.0)
+        check(detector.poll(config: autoConfig, isRecordingOnline: true, now: 208.1) == (nil, true), "Muted-mic Tencent Meeting auto-ends after hang-up")
+
+        // Scenario C: WeChat playing a 10s voice message (output-only) must NOT start; real voice call (input+output) MUST start
+        snapProcesses = [MeetingAudioProcessSample(bundleID: "com.tencent.xinWeChat", input: false, output: true)]
+        _ = detector.poll(config: autoConfig, now: 300.0)
+        check(detector.poll(config: autoConfig, now: 310.0) == (nil, false), "WeChat voice note playback (output-only) does not false-start")
+        snapProcesses = [MeetingAudioProcessSample(bundleID: "com.tencent.xinWeChat", input: true, output: true)]
+        _ = detector.poll(config: autoConfig, now: 312.0)
+        check(detector.poll(config: autoConfig, now: 314.1) == ("com.tencent.xinWeChat", false), "WeChat real voice call (input+output) auto-starts")
+        // Manual stop mid-call suppresses re-trigger during same call, then clears after hang-up
+        detector.suppressCurrent()
+        check(detector.current == nil, "suppressCurrent clears current call pointer immediately")
+        check(detector.poll(config: autoConfig, now: 318.0) == (nil, false), "Manually stopped call does not re-auto-start while same call continues")
+        snapProcesses = []
+        _ = detector.poll(config: autoConfig, now: 320.0)
+        _ = detector.poll(config: autoConfig, now: 328.5) // Clears suppression after hang-up
+
+        // Scenario D: User manually started online recording while automatic=true -> still auto-ends when Tencent Meeting hangs up
+        snapProcesses = [MeetingAudioProcessSample(bundleID: "com.tencent.meeting", input: true, output: true)]
+        _ = detector.poll(config: autoConfig, isRecordingOnline: true, now: 400.0)
+        check(detector.current == "com.tencent.meeting", "Detector latches onto active Tencent Meeting during manual online session")
+        snapProcesses = []
+        _ = detector.poll(config: autoConfig, isRecordingOnline: true, now: 450.0)
+        let manualEndEvent = detector.poll(config: autoConfig, isRecordingOnline: true, now: 458.2)
+        check(
+            manualEndEvent.ended && MeetingAutoRecordingPolicy.shouldAutoEnd(
+                eventEnded: manualEndEvent.ended,
+                hasActiveRecording: true,
+                autoSession: false,
+                onlineSession: true,
+                automaticEnabled: true
+            ),
+            "Manual online recording with automatic=true auto-ends when linked Tencent Meeting hangs up"
+        )
+        check(
+            !MeetingAutoRecordingPolicy.shouldAutoEnd(
+                eventEnded: true,
+                hasActiveRecording: true,
+                autoSession: false,
+                onlineSession: false,
+                automaticEnabled: true
+            ),
+            "In-person offline recording never auto-ends due to background app audio"
+        )
+
         print("Meeting tests: \(checks) passed")
     }
 }

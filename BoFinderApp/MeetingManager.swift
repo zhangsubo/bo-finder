@@ -44,6 +44,10 @@ final class MeetingManager: ObservableObject {
     private var appleWorker: (any MeetingAppleLiveSession)?
     private let speakerTagger = MeetingSpeakerTagger()
     private let detector = MeetingDetector()
+    private lazy var audioMonitor = MeetingAudioActivityMonitor { [weak self] in
+        Task { @MainActor in self?.tick() }
+    }
+    private var backgroundActivity: NSObjectProtocol?
     private var timer: Timer?
     private var began: Date?
     private var autoSession = false
@@ -93,9 +97,19 @@ final class MeetingManager: ObservableObject {
 
     func activate() {
         guard timer == nil else { return }
-        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+        let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
         }
+        t.tolerance = 0.15
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
+        syncAutomaticMonitoring()
+        observers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.tick() }
+        })
+        observers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didTerminateApplicationNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.tick() }
+        })
         observers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in
                 if self?.active != nil {
@@ -111,6 +125,29 @@ final class MeetingManager: ObservableObject {
                 await self?.end(process: false)
             }
         })
+    }
+
+    private func syncAutomaticMonitoring() {
+        let shouldMonitor = config.automatic || autoSession || active != nil
+        if shouldMonitor {
+            if backgroundActivity == nil {
+                backgroundActivity = ProcessInfo.processInfo.beginActivity(
+                    options: .userInitiatedAllowingIdleSystemSleep,
+                    reason: "DeskSide automatic meeting detection and recording"
+                )
+            }
+            audioMonitor.start()
+        } else {
+            audioMonitor.stop()
+            if let token = backgroundActivity {
+                ProcessInfo.processInfo.endActivity(token)
+                backgroundActivity = nil
+            }
+        }
+        if config.automatic, config.microphone != "off",
+           AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined {
+            Task { _ = await AVCaptureDevice.requestAccess(for: .audio) }
+        }
     }
 
     private func recoverOrphans(index: Int) {
@@ -135,6 +172,8 @@ final class MeetingManager: ObservableObject {
             try FileManager.default.createDirectory(at: MeetingFiles.root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             try JSONEncoder().encode(config).write(to: configURL, options: .atomic)
             MeetingFloatingPanelController.shared.syncSharingType()
+            syncAutomaticMonitoring()
+            tick()
         } catch {
             self.error = "设置保存失败：\(error.localizedDescription)"
         }
@@ -149,17 +188,41 @@ final class MeetingManager: ObservableObject {
         }
         guard !starting, !stopping else { return }
         if config.automatic || autoSession {
-            let event = detector.poll(config: config)
+            let isOnlineActive = active != nil && onlineSession
+            let event = detector.poll(config: config, isRecordingOnline: isOnlineActive)
             if let sourceBundle = event.started, active == nil {
-                guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized || config.microphone == "off" else {
+                let appName = MeetingDetector.displayName(for: sourceBundle)
+                let authStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+                if MeetingAutoRecordingPolicy.micPermissionGate(status: authStatus, microphone: config.microphone) == .denied {
                     detector.suppressCurrent()
-                    status = "已检测到通话，但尚未授予麦克风权限。请先手动开始一次录音完成授权。"
+                    let msg = "已检测到\(appName)，但麦克风权限被拒绝。请在「系统设置 → 隐私与安全性 → 麦克风」中允许 DeskSide。"
+                    status = msg
+                    HUDWindowController.shared.show(
+                        title: "检测到\(appName)，无法自动录音",
+                        subtitle: "请在系统设置 → 隐私与安全性 → 麦克风中开启权限",
+                        symbolName: "mic.slash.fill"
+                    )
                     return
                 }
-                let appName = MeetingDetector.displayName(for: sourceBundle)
+                HUDWindowController.shared.show(
+                    title: "已自动开启录音 · \(appName)",
+                    subtitle: "会议结束后将自动停止并整理纪要",
+                    symbolName: "waveform.badge.mic"
+                )
                 Task { await start(online: true, source: appName, automatic: true) }
             }
-            if event.ended && autoSession && active != nil {
+            if MeetingAutoRecordingPolicy.shouldAutoEnd(
+                eventEnded: event.ended,
+                hasActiveRecording: active != nil,
+                autoSession: autoSession,
+                onlineSession: onlineSession,
+                automaticEnabled: config.automatic
+            ) {
+                HUDWindowController.shared.show(
+                    title: "会议结束 · 已自动停止录音",
+                    subtitle: "正在保存录音并生成结构化纪要",
+                    symbolName: "checkmark.circle.fill"
+                )
                 Task { await end() }
             }
         }
@@ -280,6 +343,7 @@ final class MeetingManager: ObservableObject {
             if settings.autoShowFloatingPanel {
                 MeetingFloatingPanelController.shared.show()
             }
+            syncAutomaticMonitoring()
             onRecordingChanged?()
         } catch {
             await appleWorker?.finish()
@@ -293,7 +357,9 @@ final class MeetingManager: ObservableObject {
             active = nil
             capture = nil
             autoSession = false
+            onlineSession = false
             detector.suppressCurrent()
+            syncAutomaticMonitoring()
         }
     }
 
@@ -454,9 +520,11 @@ final class MeetingManager: ObservableObject {
         active = nil
         began = nil
         autoSession = false
+        onlineSession = false
         activeUsesAppleNative = false
         stopping = false
         status = "录音已保存"
+        syncAutomaticMonitoring()
         onRecordingChanged?()
 
         guard process else { return }

@@ -2,6 +2,7 @@ import AppKit
 @preconcurrency import AVFoundation
 import AudioToolbox
 import CoreAudio
+import Darwin
 
 // MARK: - Core Audio System Process Tap (No Screen Recording Permission Needed)
 
@@ -52,17 +53,16 @@ final class MeetingSystemAudioTap {
 
     private static func defaultOutputUID() -> String? {
         guard let device = defaultOutputDevice() else { return nil }
-        var uid: CFString = "" as CFString
-        var size = UInt32(MemoryLayout<CFString>.size)
+        var unmanagedUID: Unmanaged<CFString>?
+        var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
         var addr = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyDeviceUID,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
-        let status = withUnsafeMutablePointer(to: &uid) { ptr in
-            AudioObjectGetPropertyData(device, &addr, 0, nil, &size, ptr)
-        }
-        return status == noErr ? (uid as String) : nil
+        let status = AudioObjectGetPropertyData(device, &addr, 0, nil, &size, &unmanagedUID)
+        guard status == noErr, let cfStr = unmanagedUID?.takeRetainedValue() else { return nil }
+        return cfStr as String
     }
 
     private func fail(_ message: String) -> MeetingFailure {
@@ -461,12 +461,58 @@ final class MeetingCapture: NSObject, @unchecked Sendable, AVCaptureAudioDataOut
     }
 }
 
-// MARK: - Meeting Call Auto-Detector (Supports Helper Subprocesses without Screen Recording)
+// MARK: - Meeting Call Auto-Detector & Policy (Supports Helper Subprocesses & Muted Entry without Screen Recording)
+
+struct MeetingAudioProcessSample: Equatable {
+    var bundleID: String
+    var executablePath: String
+    var input: Bool
+    var output: Bool
+
+    init(bundleID: String, executablePath: String = "", input: Bool, output: Bool) {
+        self.bundleID = bundleID
+        self.executablePath = executablePath
+        self.input = input
+        self.output = output
+    }
+}
+
+enum MeetingAutoRecordingPolicy {
+    enum MicGate: Equatable {
+        /// Microphone is authorized or turned off, or `.notDetermined` (will prompt via `AVCaptureDevice.requestAccess`).
+        case proceed
+        /// Microphone permission was explicitly denied/restricted in System Settings.
+        case denied
+    }
+
+    static func micPermissionGate(status: AVAuthorizationStatus, microphone: String) -> MicGate {
+        if microphone == "off" { return .proceed }
+        switch status {
+        case .authorized, .notDetermined:
+            return .proceed
+        case .denied, .restricted:
+            return .denied
+        @unknown default:
+            return .proceed
+        }
+    }
+
+    static func shouldAutoEnd(
+        eventEnded: Bool,
+        hasActiveRecording: Bool,
+        autoSession: Bool,
+        onlineSession: Bool,
+        automaticEnabled: Bool
+    ) -> Bool {
+        guard eventEnded, hasActiveRecording else { return false }
+        return autoSession || (onlineSession && automaticEnabled)
+    }
+}
 
 /// Detects active calls across dedicated meeting apps and IM voice calls using Core Audio process objects,
-/// walking up helper bundle IDs (e.g., `com.bytedance.lark.helper` -> `com.bytedance.lark`).
+/// resolving helper subprocesses via both outermost `.app` executable path and bundle-ID hierarchy.
 final class MeetingDetector {
-    private static let dedicatedMeetingApps: Set<String> = [
+    static let dedicatedMeetingApps: Set<String> = [
         "com.tencent.meeting",
         "us.zoom.xos",
         "com.electron.lark",
@@ -475,13 +521,44 @@ final class MeetingDetector {
         "com.microsoft.teams",
     ]
 
-    private var consecutive: [String: Int] = [:]
-    private var absent: [String: Int] = [:]
+    static let supportedApps: Set<String> = dedicatedMeetingApps.union([
+        "com.tencent.xinWeChat",
+        "com.alibaba.DingTalkMac",
+    ])
+
+    /// Minimum sustained active audio before starting a call when microphone input is active.
+    static let inputStartThreshold: TimeInterval = 2.0
+    /// Minimum sustained output audio before starting a dedicated meeting app joined with muted mic ("入会静音").
+    static let mutedOutputStartThreshold: TimeInterval = 4.5
+    /// Grace window after all call audio stops before ending (absorbs sub-second AirPods/speaker switches
+    /// while ending within ~2s of clicking "离开会议").
+    static let endGraceSeconds: TimeInterval = 2.0
+
+    struct Snapshot {
+        var runningBundles: Set<String>
+        var ownBundle: String
+        var processes: [MeetingAudioProcessSample]
+    }
+
+    private let snapshotProvider: () -> Snapshot
+    private static var bundlePathCache: [String: String] = [:]
+    private static let cacheLock = NSLock()
+
+    private var inputSince: [String: TimeInterval] = [:]
+    private var outputSince: [String: TimeInterval] = [:]
+    private var absentSince: [String: TimeInterval] = [:]
     private var suppressed = Set<String>()
     private(set) var current: String?
 
+    init(snapshotProvider: (() -> Snapshot)? = nil) {
+        self.snapshotProvider = snapshotProvider ?? Self.liveSnapshot
+    }
+
     func suppressCurrent() {
-        if let current { suppressed.insert(current) }
+        if let current {
+            suppressed.insert(current)
+            self.current = nil
+        }
     }
 
     static func displayName(for bundleID: String) -> String {
@@ -491,22 +568,67 @@ final class MeetingDetector {
         case "com.electron.lark", "com.bytedance.lark": return "飞书会议"
         case "com.alibaba.DingTalkMac": return "钉钉通话"
         case "us.zoom.xos": return "Zoom 会议"
+        case "com.microsoft.teams2", "com.microsoft.teams": return "Teams 会议"
         default: return "线上会议"
         }
     }
 
-    /// Walks up helper bundle IDs (`com.electron.lark.helper.Audio`) to find the parent running app.
-    static func ownerBundle(of processBundleID: String, running: Set<String>) -> String? {
+    /// Extracts the outermost `.app` bundle path from an executable path
+    /// (e.g., `/Applications/TencentMeeting.app/Contents/Frameworks/.../wmexternal.app/Contents/MacOS/wmexternal`
+    /// -> `/Applications/TencentMeeting.app`).
+    static func outermostAppPath(forExecutablePath path: String) -> String? {
+        guard !path.isEmpty, let range = path.range(of: ".app/") else { return nil }
+        return String(path[..<range.upperBound].dropLast())
+    }
+
+    private static func cachedBundleID(forAppPath appPath: String) -> String? {
+        cacheLock.lock()
+        if let cached = bundlePathCache[appPath] {
+            cacheLock.unlock()
+            return cached.isEmpty ? nil : cached
+        }
+        cacheLock.unlock()
+
+        let resolved = Bundle(path: appPath)?.bundleIdentifier ?? ""
+        cacheLock.lock()
+        bundlePathCache[appPath] = resolved
+        cacheLock.unlock()
+        return resolved.isEmpty ? nil : resolved
+    }
+
+    /// Walks up helper bundle IDs (`com.tencent.meeting.services.wmexternal`, `com.electron.lark.helper`)
+    /// to find the parent supported app, ignoring `.accessory` helper entries in `runningApplications`.
+    static func ownerBundle(
+        of processBundleID: String,
+        executablePath: String = "",
+        running: Set<String>,
+        appBundleIDResolver: (String) -> String? = cachedBundleID(forAppPath:)
+    ) -> String? {
+        let candidateTargets = running.intersection(supportedApps)
+
+        // 1. Outermost `.app` container path handles helpers whose bundle ID doesn't even share a prefix
+        //    with the parent app (e.g. WeChat's `com.tencent.flue.helper.plugin` or empty C++ helper bundle IDs).
+        if let appPath = outermostAppPath(forExecutablePath: executablePath),
+           let outerID = appBundleIDResolver(appPath),
+           candidateTargets.contains(outerID) {
+            return outerID
+        }
+
+        // 2. Walk dot-separated prefixes against running supported parent apps (never stopping at helper `.app`s).
         var parts = processBundleID.split(separator: ".").map(String.init)
         while !parts.isEmpty {
             let candidate = parts.joined(separator: ".")
-            if running.contains(candidate) { return candidate }
+            if candidateTargets.contains(candidate) { return candidate }
             parts.removeLast()
         }
         return nil
     }
 
-    func poll(config: MeetingConfiguration) -> (started: String?, ended: Bool) {
+    func poll(
+        config: MeetingConfiguration,
+        isRecordingOnline: Bool = false,
+        now: TimeInterval = ProcessInfo.processInfo.systemUptime
+    ) -> (started: String?, ended: Bool) {
         var enabled: [String] = []
         if config.tencent { enabled.append("com.tencent.meeting") }
         if config.wechat { enabled.append("com.tencent.xinWeChat") }
@@ -514,52 +636,123 @@ final class MeetingDetector {
         if config.dingtalk { enabled.append("com.alibaba.DingTalkMac") }
         if config.zoom { enabled.append("us.zoom.xos") }
 
-        let runningBundles = Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
-        let ownBundle = Bundle.main.bundleIdentifier ?? "com.bofinder.app"
-        let audioStates = activeAudioBundles(running: runningBundles, ownBundle: ownBundle)
+        let snap = snapshotProvider()
+        let audioStates = Self.mergeAudioStates(from: snap)
 
-        var active = Set<String>()
-        for bundle in Set(enabled).union(current.map { [$0] } ?? []) {
-            guard runningBundles.contains(bundle), let state = audioStates[bundle] else { continue }
+        var readyToStart = Set<String>()
+        var stillInCall = Set<String>()
+        let tracked = Set(enabled).union(suppressed).union(current.map { [$0] } ?? [])
+
+        for bundle in tracked {
+            let isRunningApp = snap.runningBundles.contains(bundle)
+            let state: (input: Bool, output: Bool) = isRunningApp ? (audioStates[bundle] ?? (false, false)) : (false, false)
+
+            let callInputActive: Bool
+            let callAnyActive: Bool
             if Self.dedicatedMeetingApps.contains(bundle) {
-                if state.input || (bundle == current && state.output) {
-                    active.insert(bundle)
+                callInputActive = state.input
+                callAnyActive = state.input || state.output
+            } else {
+                // Chat apps (WeChat, DingTalk): playing a voice note only runs output; a voice call runs input & output.
+                callInputActive = state.input && state.output
+                callAnyActive = (state.input && state.output) || (bundle == current && state.input)
+            }
+
+            if callInputActive {
+                if inputSince[bundle] == nil { inputSince[bundle] = now }
+            } else {
+                inputSince[bundle] = nil
+            }
+
+            if callAnyActive {
+                if outputSince[bundle] == nil { outputSince[bundle] = now }
+                absentSince[bundle] = nil
+                stillInCall.insert(bundle)
+
+                if let t0 = inputSince[bundle], now - t0 >= Self.inputStartThreshold {
+                    readyToStart.insert(bundle)
+                } else if Self.dedicatedMeetingApps.contains(bundle),
+                          let t0 = outputSince[bundle],
+                          now - t0 >= Self.mutedOutputStartThreshold {
+                    readyToStart.insert(bundle)
                 }
             } else {
-                // Chat apps (WeChat, DingTalk) run both input & output during a real voice/video call.
-                if (state.input && state.output) || (bundle == current && state.input) {
-                    active.insert(bundle)
+                outputSince[bundle] = nil
+                if !isRunningApp {
+                    suppressed.remove(bundle)
+                    absentSince[bundle] = nil
+                } else if bundle == current || suppressed.contains(bundle) {
+                    if absentSince[bundle] == nil { absentSince[bundle] = now }
+                    if let offSince = absentSince[bundle], now - offSince >= Self.endGraceSeconds {
+                        suppressed.remove(bundle)
+                    }
+                } else {
+                    absentSince[bundle] = nil
                 }
             }
         }
 
-        for bundle in Set(enabled).union(suppressed).union(current.map { [$0] } ?? []) {
-            if active.contains(bundle) {
-                consecutive[bundle, default: 0] += 1
-                absent[bundle] = 0
-            } else {
-                consecutive[bundle] = 0
-                absent[bundle, default: 0] += 1
+        if let current, !stillInCall.contains(current) {
+            if !snap.runningBundles.contains(current) {
+                self.current = nil
+                absentSince[current] = nil
+                return (nil, true)
             }
-            if absent[bundle, default: 0] >= 15 {
-                suppressed.remove(bundle)
+            if let offSince = absentSince[current], now - offSince >= Self.endGraceSeconds {
+                self.current = nil
+                absentSince[current] = nil
+                return (nil, true)
             }
         }
 
-        if let current, absent[current, default: 0] >= 15 {
-            self.current = nil
-            return (nil, true)
+        if current == nil, config.automatic {
+            if isRecordingOnline {
+                // User already started an online recording manually; latch onto any active enabled meeting app
+                // (even if previously suppressed) so hanging up the meeting auto-ends this recording too.
+                if let activeCall = enabled.first(where: { readyToStart.contains($0) || stillInCall.contains($0) }) {
+                    suppressed.remove(activeCall)
+                    current = activeCall
+                }
+                return (nil, false)
+            }
+
+            if let start = enabled.first(where: { readyToStart.contains($0) && !suppressed.contains($0) }) {
+                current = start
+                return (start, false)
+            }
         }
-        if current == nil,
-           config.automatic,
-           let start = enabled.first(where: { consecutive[$0, default: 0] >= 2 && !suppressed.contains($0) }) {
-            current = start
-            return (start, false)
-        }
+
         return (nil, false)
     }
 
-    private func activeAudioBundles(running: Set<String>, ownBundle: String) -> [String: (input: Bool, output: Bool)] {
+    private static func mergeAudioStates(from snapshot: Snapshot) -> [String: (input: Bool, output: Bool)] {
+        var merged: [String: (input: Bool, output: Bool)] = [:]
+        for sample in snapshot.processes where sample.input || sample.output {
+            guard let owner = ownerBundle(
+                of: sample.bundleID,
+                executablePath: sample.executablePath,
+                running: snapshot.runningBundles
+            ), owner != snapshot.ownBundle else {
+                continue
+            }
+            let prev = merged[owner] ?? (false, false)
+            merged[owner] = (prev.input || sample.input, prev.output || sample.output)
+        }
+        return merged
+    }
+
+    static func pidExecutablePath(_ pid: pid_t) -> String {
+        guard pid > 0 else { return "" }
+        var buf = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
+        let len = proc_pidpath(pid, &buf, UInt32(buf.count))
+        guard len > 0 else { return "" }
+        return String(cString: buf)
+    }
+
+    static func liveSnapshot() -> Snapshot {
+        let running = Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
+        let own = Bundle.main.bundleIdentifier ?? "com.bofinder.app"
+
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyProcessObjectList,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -568,14 +761,14 @@ final class MeetingDetector {
         var size: UInt32 = 0
         let systemObj = AudioObjectID(kAudioObjectSystemObject)
         guard AudioObjectGetPropertyDataSize(systemObj, &address, 0, nil, &size) == noErr, size > 0 else {
-            return [:]
+            return Snapshot(runningBundles: running, ownBundle: own, processes: [])
         }
         var ids = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
         guard AudioObjectGetPropertyData(systemObj, &address, 0, nil, &size, &ids) == noErr else {
-            return [:]
+            return Snapshot(runningBundles: running, ownBundle: own, processes: [])
         }
 
-        var merged: [String: (input: Bool, output: Bool)] = [:]
+        var samples: [MeetingAudioProcessSample] = []
         for obj in ids {
             var inRun: UInt32 = 0
             var outRun: UInt32 = 0
@@ -587,24 +780,144 @@ final class MeetingDetector {
             _ = AudioObjectGetPropertyData(obj, &address, 0, nil, &propLen, &outRun)
             guard inRun != 0 || outRun != 0 else { continue }
 
-            var cfBundle: CFString = "" as CFString
-            var strLen = UInt32(MemoryLayout<CFString>.size)
+            var pid: pid_t = 0
+            var pidLen = UInt32(MemoryLayout<pid_t>.size)
+            address.mSelector = kAudioProcessPropertyPID
+            _ = AudioObjectGetPropertyData(obj, &address, 0, nil, &pidLen, &pid)
+
+            var unmanagedBundle: Unmanaged<CFString>?
+            var strLen = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
             address.mSelector = kAudioProcessPropertyBundleID
-            let status = withUnsafeMutablePointer(to: &cfBundle) { ptr in
-                AudioObjectGetPropertyData(obj, &address, 0, nil, &strLen, ptr)
-            }
-            guard status == noErr else { continue }
-            let rawBundle = cfBundle as String
-            guard !rawBundle.isEmpty,
-                  let owner = Self.ownerBundle(of: rawBundle, running: runningBundles(from: running)),
-                  owner != ownBundle else {
-                continue
-            }
-            let prev = merged[owner] ?? (false, false)
-            merged[owner] = (prev.input || inRun != 0, prev.output || outRun != 0)
+            let status = AudioObjectGetPropertyData(obj, &address, 0, nil, &strLen, &unmanagedBundle)
+            let rawBundle = (status == noErr ? (unmanagedBundle?.takeRetainedValue() as String?) : nil) ?? ""
+
+            samples.append(MeetingAudioProcessSample(
+                bundleID: rawBundle,
+                executablePath: pidExecutablePath(pid),
+                input: inRun != 0,
+                output: outRun != 0
+            ))
         }
-        return merged
+        return Snapshot(runningBundles: running, ownBundle: own, processes: samples)
+    }
+}
+
+/// Pushes immediate Core Audio HAL notifications whenever audio client processes start or stop IO,
+/// ensuring meeting start/end detection reacts promptly even while DeskSide sits idle in the menu bar.
+final class MeetingAudioActivityMonitor {
+    private let queue = DispatchQueue(label: "com.bofinder.meeting.audio-activity", qos: .utility)
+    private let onActivityChanged: @Sendable () -> Void
+    private var started = false
+    private var systemListenerBlock: AudioObjectPropertyListenerBlock?
+    private var processListenerBlocks: [AudioObjectID: AudioObjectPropertyListenerBlock] = [:]
+    private var debounceWork: DispatchWorkItem?
+    private var followUpWork: DispatchWorkItem?
+
+    init(onActivityChanged: @escaping @Sendable () -> Void) {
+        self.onActivityChanged = onActivityChanged
     }
 
-    private func runningBundles(from set: Set<String>) -> Set<String> { set }
+    func start() {
+        queue.async { [weak self] in
+            guard let self, !self.started else { return }
+            self.started = true
+            let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+                self?.refreshWatchedProcesses()
+                self?.scheduleNotify()
+            }
+            self.systemListenerBlock = block
+            var addr = Self.propertyAddress(kAudioHardwarePropertyProcessObjectList)
+            AudioObjectAddPropertyListenerBlock(
+                AudioObjectID(kAudioObjectSystemObject),
+                &addr,
+                self.queue,
+                block
+            )
+            self.refreshWatchedProcesses()
+        }
+    }
+
+    func stop() {
+        queue.async { [weak self] in
+            guard let self, self.started else { return }
+            self.started = false
+            self.debounceWork?.cancel()
+            self.debounceWork = nil
+            self.followUpWork?.cancel()
+            self.followUpWork = nil
+            if let block = self.systemListenerBlock {
+                var addr = Self.propertyAddress(kAudioHardwarePropertyProcessObjectList)
+                AudioObjectRemovePropertyListenerBlock(
+                    AudioObjectID(kAudioObjectSystemObject),
+                    &addr,
+                    self.queue,
+                    block
+                )
+                self.systemListenerBlock = nil
+            }
+            for (obj, block) in self.processListenerBlocks {
+                var inAddr = Self.propertyAddress(kAudioProcessPropertyIsRunningInput)
+                var outAddr = Self.propertyAddress(kAudioProcessPropertyIsRunningOutput)
+                AudioObjectRemovePropertyListenerBlock(obj, &inAddr, self.queue, block)
+                AudioObjectRemovePropertyListenerBlock(obj, &outAddr, self.queue, block)
+            }
+            self.processListenerBlocks.removeAll()
+        }
+    }
+
+    private func refreshWatchedProcesses() {
+        guard started else { return }
+        let systemObj = AudioObjectID(kAudioObjectSystemObject)
+        var addr = Self.propertyAddress(kAudioHardwarePropertyProcessObjectList)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(systemObj, &addr, 0, nil, &size) == noErr, size > 0 else { return }
+        var ids = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(systemObj, &addr, 0, nil, &size, &ids) == noErr else { return }
+
+        let currentSet = Set(ids)
+        for (oldID, block) in processListenerBlocks where !currentSet.contains(oldID) {
+            var inAddr = Self.propertyAddress(kAudioProcessPropertyIsRunningInput)
+            var outAddr = Self.propertyAddress(kAudioProcessPropertyIsRunningOutput)
+            AudioObjectRemovePropertyListenerBlock(oldID, &inAddr, queue, block)
+            AudioObjectRemovePropertyListenerBlock(oldID, &outAddr, queue, block)
+            processListenerBlocks.removeValue(forKey: oldID)
+        }
+
+        for obj in ids where processListenerBlocks[obj] == nil {
+            let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+                self?.scheduleNotify()
+            }
+            var inAddr = Self.propertyAddress(kAudioProcessPropertyIsRunningInput)
+            var outAddr = Self.propertyAddress(kAudioProcessPropertyIsRunningOutput)
+            let s1 = AudioObjectAddPropertyListenerBlock(obj, &inAddr, queue, block)
+            let s2 = AudioObjectAddPropertyListenerBlock(obj, &outAddr, queue, block)
+            if s1 == noErr || s2 == noErr {
+                processListenerBlocks[obj] = block
+            }
+        }
+    }
+
+    private func scheduleNotify() {
+        debounceWork?.cancel()
+        followUpWork?.cancel()
+        let callback = onActivityChanged
+        let immediate = DispatchWorkItem {
+            callback()
+        }
+        let followUp = DispatchWorkItem {
+            callback()
+        }
+        debounceWork = immediate
+        followUpWork = followUp
+        queue.asyncAfter(deadline: .now() + 0.15, execute: immediate)
+        queue.asyncAfter(deadline: .now() + MeetingDetector.endGraceSeconds + 0.25, execute: followUp)
+    }
+
+    private static func propertyAddress(_ selector: AudioObjectPropertySelector) -> AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(
+            mSelector: selector,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+    }
 }

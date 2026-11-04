@@ -30,7 +30,10 @@ xcrun swiftc -sdk "$SDK_PATH" -target "$TARGET" \
     -framework Accelerate \
     -framework CoreML \
     -framework AVFoundation \
+    -framework CoreAudio \
+    -framework AudioToolbox \
     "$ROOT_DIR/BoFinderApp/MeetingModels.swift" \
+    "$ROOT_DIR/BoFinderApp/MeetingCapture.swift" \
     "$ROOT_DIR/BoFinderApp/MeetingSpeakerID.swift" \
     "$ROOT_DIR/BoFinderApp/MeetingNotes.swift" \
     "$ROOT_DIR/BoFinderApp/AppUpdater.swift" \

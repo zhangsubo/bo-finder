@@ -319,15 +319,19 @@ private struct MeetingFloatingPanelRootView: View {
                 panelIconButton(symbol: "minus", help: "收起为迷你补课小卡") {
                     collapseToCard()
                 }
+
+                panelIconButton(symbol: "xmark", help: "关闭桌边悬浮窗") {
+                    MeetingFloatingPanelController.shared.hide()
+                }
             }
 
             HStack(spacing: 6) {
                 if isLive {
                     MeetingBreathingDot(color: record?.phase == "paused" ? .orange : .red)
                 } else {
-                    Image(systemName: manager.config.floatingPanelCapturable ? "eye.fill" : "eye.slash.fill")
+                    Image(systemName: "checkmark.circle.fill")
                         .font(.system(size: 11))
-                        .foregroundColor(manager.config.floatingPanelCapturable ? .orange : .secondary)
+                        .foregroundColor(.green)
                 }
 
                 Text(subtitleStatusText)
@@ -625,11 +629,19 @@ private struct MeetingFloatingPanelRootView: View {
                         .font(.system(size: 11).monospacedDigit())
                         .foregroundColor(.secondary)
                 } else {
-                    if isLive { MeetingBreathingDot(color: .red) }
-                    Text(currentTopic.map { (isLive ? "正在讲 · " : "最近议题 · ") + MeetingRecord.shortClock($0.start) }
-                         ?? (isLive ? "正在记录" : "实时纪要"))
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
+                    if isLive {
+                        MeetingBreathingDot(color: .red)
+                        Text(currentTopic.map { "正在讲 · " + MeetingRecord.shortClock($0.start) } ?? "正在记录")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+                    } else {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 11))
+                            .foregroundColor(.green)
+                        Text("已结束录音 · " + MeetingRecord.shortClock(record?.duration ?? 0))
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(.secondary)
+                    }
                 }
                 Spacer()
                 if manager.config.floatingPanelCapturable {
@@ -637,6 +649,9 @@ private struct MeetingFloatingPanelRootView: View {
                 }
                 panelIconButton(symbol: "arrow.up.left.and.arrow.down.right", help: "展开侧边纪要窗") {
                     onResize(440, 720)
+                }
+                panelIconButton(symbol: "xmark", help: "关闭悬浮窗") {
+                    MeetingFloatingPanelController.shared.hide()
                 }
             }
 
@@ -684,7 +699,15 @@ private struct MeetingFloatingPanelRootView: View {
                     .controlSize(.small)
                 }
             } else {
-                Text(currentTopic?.title ?? (isLive ? ((record?.segments.isEmpty ?? true) ? "正在听发言…" : "正在生成首版纪要…") : "暂无实时议题"))
+                Text(
+                    currentTopic?.title ?? (
+                        isLive
+                            ? ((record?.segments.isEmpty ?? true) ? "正在听发言…" : "正在生成首版纪要…")
+                            : (record?.transcriptState == "working"
+                                ? "录音已保存，正在转写文字…"
+                                : (record?.summaryState == "working" ? "正在生成完整版纪要…" : "会议录音已结束"))
+                    )
+                )
                     .font(.system(size: 16, weight: .bold))
                     .lineLimit(2)
 
