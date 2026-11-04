@@ -64,9 +64,15 @@ mkdir -p "$APPEX_BUNDLE/Contents/Resources"
 
 cp "$ROOT_DIR/BoFinderApp/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
 cp "$ROOT_DIR/BoFinderSync/Info.plist" "$APPEX_BUNDLE/Contents/Info.plist"
-if [[ -n "${MARKETING_VERSION:-}" ]]; then
-    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $MARKETING_VERSION" "$APP_BUNDLE/Contents/Info.plist"
-    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $MARKETING_VERSION" "$APPEX_BUNDLE/Contents/Info.plist"
+if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+    EFFECTIVE_VERSION="${MARKETING_VERSION:-}"
+else
+    BASE_VERSION="${MARKETING_VERSION:-$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$ROOT_DIR/BoFinderApp/Info.plist")}"
+    EFFECTIVE_VERSION="${BASE_VERSION%-dev}-dev"
+fi
+if [[ -n "$EFFECTIVE_VERSION" ]]; then
+    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $EFFECTIVE_VERSION" "$APP_BUNDLE/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $EFFECTIVE_VERSION" "$APPEX_BUNDLE/Contents/Info.plist"
 fi
 if [[ -n "${BUILD_NUMBER:-}" ]]; then
     /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$APP_BUNDLE/Contents/Info.plist"
