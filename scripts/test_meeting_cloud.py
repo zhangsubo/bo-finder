@@ -36,7 +36,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if kind == "redirect":
             self.send_header("Location", "/leaked/chat/completions")
         self.end_headers()
-        data = {"choices": [{"message": {"content": "" if kind == "empty" else "测试纪要"}, "finish_reason": "length" if kind == "truncated" else "stop"}]}
+        is_empty = kind in ("empty", "reasoning-truncated")
+        is_trunc = kind in ("truncated", "reasoning-truncated")
+        data = {"choices": [{"message": {"content": "" if is_empty else "测试纪要"}, "finish_reason": "length" if is_trunc else "stop"}]}
         self.wfile.write(json.dumps(data).encode())
 
 
@@ -60,7 +62,7 @@ if __name__ == "__main__":
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         subprocess.run([str(output), f"http://127.0.0.1:{server.server_port}"], check=True)
-        assert len(requests) == 5, "Redirect must not forward credentials"
+        assert len(requests) == 6, "Redirect must not forward credentials"
         for path, body, authorization in requests:
             assert path.endswith("/chat/completions")
             assert body == {"model": "test-model", "messages": [{"role": "user", "content": "测试转录"}], "stream": False}

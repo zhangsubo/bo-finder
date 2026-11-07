@@ -318,9 +318,7 @@ enum MeetingSpeakerGuessLogic {
         _ reply: String,
         record: MeetingRecord
     ) -> (found: [String: MeetingSpeakerGuess], refuted: [String: String]) {
-        guard let jsonText = MeetingNotesParser.extractJSONObject(reply),
-              let data = jsonText.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        guard let obj = MeetingNotesParser.decodeJSONDictionary(reply),
               let list = obj["speakers"] as? [[String: Any]] else {
             return ([:], [:])
         }
@@ -449,8 +447,9 @@ final class MeetingSpeakerNamer: ObservableObject {
                         ["role": "user", "content": content]
                     ],
                     temperature: 0.1,
-                    maxTokens: 512,
-                    timeout: 45
+                    disableThinking: true,
+                    jsonMode: true,
+                    timeout: 90
                 )
                 guard let latest = manager.records.first(where: { $0.id == meetingID }) else { return }
                 var (found, refuted) = MeetingSpeakerGuessLogic.read(reply, record: latest)

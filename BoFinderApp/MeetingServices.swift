@@ -73,32 +73,50 @@ enum MeetingCloud {
         messages: [[String: Any]],
         temperature: Double? = nil,
         maxTokens: Int? = nil,
+        disableThinking: Bool = false,
+        jsonMode: Bool = false,
         timeout: TimeInterval = 180
     ) async throws -> String {
         guard !model.trimmingCharacters(in: .whitespaces).isEmpty else { throw MeetingFailure.message("请配置模型 ID。") }
         let url = try MeetingFiles.endpoint(base, path: "chat/completions")
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.timeoutInterval = timeout
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if !key.isEmpty { request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization") }
         var payload: [String: Any] = ["model": model, "messages": messages, "stream": false]
         if let temperature { payload["temperature"] = temperature }
         if let maxTokens { payload["max_tokens"] = maxTokens }
-        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.urlCache = nil
-        let session = URLSession(configuration: configuration, delegate: MeetingNoRedirect(), delegateQueue: nil)
-        defer { session.invalidateAndCancel() }
-        let (data, response) = try await session.data(for: request)
-        guard let response = response as? HTTPURLResponse else { throw MeetingFailure.message("模型服务没有返回有效 HTTP 响应。") }
+        if jsonMode { payload["response_format"] = ["type": "json_object"] }
+        let sentThinkingFlag = MeetingCloudPayload.shouldDisableMiMoThinking(url: url, model: model, disableThinking: disableThinking)
+        if sentThinkingFlag {
+            payload["thinking"] = ["type": "disabled"]
+        }
+
+        func send(_ body: [String: Any]) async throws -> (Data, HTTPURLResponse) {
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.timeoutInterval = timeout
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            if !key.isEmpty { request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization") }
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.urlCache = nil
+            let session = URLSession(configuration: configuration, delegate: MeetingNoRedirect(), delegateQueue: nil)
+            defer { session.invalidateAndCancel() }
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                throw MeetingFailure.message("模型服务没有返回有效 HTTP 响应。")
+            }
+            return (data, http)
+        }
+
+        var (data, response) = try await send(payload)
+        if response.statusCode == 400, jsonMode {
+            payload.removeValue(forKey: "response_format")
+            (data, response) = try await send(payload)
+        }
+        if response.statusCode == 400, sentThinkingFlag {
+            payload.removeValue(forKey: "thinking")
+            (data, response) = try await send(payload)
+        }
         guard (200..<300).contains(response.statusCode) else { throw MeetingFailure.message("模型请求失败（HTTP \(response.statusCode)），请检查地址、模型、密钥或额度后重试。") }
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let choices = json["choices"] as? [[String: Any]], let choice = choices.first,
-              let message = choice["message"] as? [String: Any], let content = message["content"] as? String,
-              !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw MeetingFailure.message("模型未返回可用文本，请检查接口是否兼容 Chat Completions。") }
-        if choice["finish_reason"] as? String == "length" { throw MeetingFailure.message("模型输出被长度限制截断，本次未保存为完整纪要；请更换模型或调整模板后重试。") }
-        return content
+        return try MeetingCloudPayload.extractCompletionContent(from: data)
     }
 
     static func summarize(_ record: MeetingRecord, config: MeetingConfiguration) async throws -> String {
@@ -118,7 +136,7 @@ enum MeetingCloud {
             let text = try await completion(base: config.summaryBase, key: key, model: config.summaryModel, messages: [
                 ["role": "system", "content": instructions + (groups.count > 1 ? "\n这是长会议的一部分，提取所有要点并保留来源，以便后续合并。" : "")],
                 ["role": "user", "content": "会议：\(record.title)\n<transcript>\n\(group)\n</transcript>"]
-            ])
+            ], disableThinking: true, timeout: 300)
             notes.append(text)
         }
         if notes.count == 1 { return notes[0] }
@@ -128,7 +146,7 @@ enum MeetingCloud {
         return try await completion(base: config.summaryBase, key: key, model: config.summaryModel, messages: [
             ["role": "system", "content": instructions + "\n合并以下分段纪要，消除重复但保留所有明确行动、决策和来源引用。"],
             ["role": "user", "content": combined]
-        ])
+        ], disableThinking: true, timeout: 300)
     }
 
     static func transcribe(file: URL, config: MeetingConfiguration) async throws -> String {

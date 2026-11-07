@@ -104,7 +104,7 @@ final class AppUpdater: ObservableObject {
 
     var canAutoInstallInPlace: Bool {
         let path = Bundle.main.bundleURL.standardizedFileURL.path
-        return canInstallInPlace && !path.contains("/build/")
+        return canInstallInPlace && !path.contains("/build/") && !currentVersion.hasSuffix("-dev")
     }
 
     private var pollTimer: Timer? = nil

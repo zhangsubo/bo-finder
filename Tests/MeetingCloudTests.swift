@@ -6,11 +6,16 @@ struct MeetingCloudTests {
         let base = CommandLine.arguments[1]
         let text = try await MeetingCloud.completion(base: base + "/ok", key: "test-only", model: "test-model", messages: [["role": "user", "content": "测试转录"]])
         precondition(text == "测试纪要")
-        for path in ["unauthorized", "empty", "truncated", "redirect"] {
+        for path in ["unauthorized", "empty", "truncated", "reasoning-truncated", "redirect"] {
             do {
-                _ = try await MeetingCloud.completion(base: base + "/" + path, key: "test-only", model: "test-model", messages: [["role": "user", "content": "测试转录"]])
+                _ = try await MeetingCloud.completion(base: base + "/" + path, key: "test-only", model: "test-model", messages: [["role": "user", "content": "测试转录"]], disableThinking: true)
                 fatalError("Accepted invalid response: \(path)")
-            } catch { print("✅ Rejected \(path)") }
+            } catch {
+                if path == "reasoning-truncated" {
+                    precondition(error.localizedDescription.contains("长度限制截断"))
+                }
+                print("✅ Rejected \(path)")
+            }
         }
         let models = try await MeetingCloud.fetchModels(base: base + "/ok", key: "test-only")
         precondition(models == ["mimo-v2.6-flash", "mimo-v2-omni"])

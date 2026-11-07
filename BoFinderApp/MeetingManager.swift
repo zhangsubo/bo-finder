@@ -78,7 +78,7 @@ final class MeetingManager: ObservableObject {
                     }
                 }
                 if records[i].transcriptState == "working" { records[i].transcriptState = "failed" }
-                if records[i].summaryState == "working" { records[i].summaryState = "failed" }
+                records[i].recoverInterruptedSummaryOnLaunch()
                 recoverOrphans(index: i)
                 try MeetingFiles.save(records[i])
             }
@@ -649,10 +649,7 @@ final class MeetingManager: ObservableObject {
     }
 
     func markSummaryFailed(_ id: UUID, message: String) {
-        update(id) {
-            $0.summaryState = "failed"
-            $0.issue = message
-        }
+        update(id) { $0.applyFinalSummaryFailure(message) }
     }
 
     func applySpeakerGuesses(

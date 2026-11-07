@@ -131,6 +131,27 @@ struct MeetingRecord: Codable, Identifiable {
     var speakerGuesses: [String: MeetingSpeakerGuess]? = nil
     var userRenamedTitle: Bool? = nil
 
+    /// Marks final summary generation as failed while keeping any mid-meeting live notes intact.
+    mutating func applyFinalSummaryFailure(_ message: String) {
+        summaryState = "failed"
+        if notes?.isEmpty == false, !message.contains("已保留会中速记") {
+            issue = "完整版纪要未完成（已保留会中速记）：\(message)"
+        } else {
+            issue = message
+        }
+    }
+
+    /// Recovers records left in `"working"` state across an app restart or interrupted final pass.
+    mutating func recoverInterruptedSummaryOnLaunch() {
+        guard summaryState == "working" else { return }
+        summaryState = "failed"
+        if issue.isEmpty {
+            issue = (notes?.isEmpty == false)
+                ? "上次完整版纪要未完成（已保留会中速记），可点击下方「生成 / 更新纪要」重试。"
+                : "上次纪要整理中断，可点击下方「生成 / 更新纪要」重试。"
+        }
+    }
+
     /// Stable 1-based display numbers for voiceprint speaker keys ("v0", "v1", ...) in appearance order.
     var voiceDisplayNumbers: [String: Int] {
         var seen: [String: Int] = [:]
@@ -471,5 +492,36 @@ enum MeetingModelListParser {
             }
         }
         return result
+    }
+}
+
+enum MeetingCloudPayload {
+    /// Xiaomi MiMo-v2 models enable Deep Thinking CoT by default on `*.xiaomimimo.com`, which consumes
+    /// thousands of reasoning tokens and 100s+ latency on structured extraction unless explicitly disabled.
+    static func shouldDisableMiMoThinking(url: URL, model: String, disableThinking: Bool) -> Bool {
+        guard disableThinking,
+              let host = url.host?.lowercased(),
+              host == "xiaomimimo.com" || host.hasSuffix(".xiaomimimo.com") else {
+            return false
+        }
+        let lowerModel = model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return lowerModel.hasPrefix("mimo-v2") && !lowerModel.contains("asr")
+    }
+
+    static func extractCompletionContent(from data: Data) throws -> String {
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let choices = json["choices"] as? [[String: Any]],
+              let choice = choices.first,
+              let message = choice["message"] as? [String: Any] else {
+            throw MeetingFailure.message("模型未返回可用文本，请检查接口是否兼容 Chat Completions。")
+        }
+        if choice["finish_reason"] as? String == "length" {
+            throw MeetingFailure.message("模型输出被长度限制截断，本次未保存为完整纪要；请更换模型或调整模板后重试。")
+        }
+        guard let content = message["content"] as? String,
+              !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw MeetingFailure.message("模型未返回可用文本，请检查接口是否兼容 Chat Completions。")
+        }
+        return content
     }
 }

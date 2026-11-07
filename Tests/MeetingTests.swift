@@ -400,6 +400,86 @@ struct MeetingTests {
             "In-person offline recording never auto-ends due to background app audio"
         )
 
+        // 13. Regression tests: final summary failure with existing live notes must never stick in "working",
+        // and Xiaomi MiMo reasoning configuration + length-truncation diagnostics
+        var stuckWithLiveNotes = MeetingRecord(title: "11月6日 报告引用溯源讨论", source: "腾讯会议")
+        stuckWithLiveNotes.summaryState = "working"
+        stuckWithLiveNotes.notes = parsedNotes
+        stuckWithLiveNotes.applyFinalSummaryFailure("请求超时。")
+        check(
+            stuckWithLiveNotes.summaryState == "failed"
+                && stuckWithLiveNotes.notes?.title == "Q4发版评审"
+                && stuckWithLiveNotes.issue.contains("已保留会中速记")
+                && stuckWithLiveNotes.issue.contains("请求超时。"),
+            "Final summary failure with non-empty live notes marks failed, preserves live notes, and surfaces issue"
+        )
+
+        var relaunchedStuck = MeetingRecord(title: "11月6日 技术经验与团队介绍", source: "腾讯会议")
+        relaunchedStuck.summaryState = "working"
+        relaunchedStuck.notes = parsedNotes
+        relaunchedStuck.recoverInterruptedSummaryOnLaunch()
+        check(
+            relaunchedStuck.summaryState == "failed" && relaunchedStuck.issue.contains("已保留会中速记"),
+            "Launch recovery resets stranded working summaryState and explains preserved live notes"
+        )
+
+        let mimoPlanURL = URL(string: "https://token-plan-cn.xiaomimimo.com/v1/chat/completions")!
+        let openAIURL = URL(string: "https://api.openai.com/v1/chat/completions")!
+        check(
+            MeetingCloudPayload.shouldDisableMiMoThinking(url: mimoPlanURL, model: "mimo-v2.6-flash", disableThinking: true)
+                && !MeetingCloudPayload.shouldDisableMiMoThinking(url: mimoPlanURL, model: "mimo-v2.5-asr", disableThinking: true)
+                && !MeetingCloudPayload.shouldDisableMiMoThinking(url: mimoPlanURL, model: "mimo-v2.6-flash", disableThinking: false)
+                && !MeetingCloudPayload.shouldDisableMiMoThinking(url: openAIURL, model: "gpt-4.1-mini", disableThinking: true),
+            "Disables default Deep Thinking CoT only on Xiaomi MiMo-v2 non-ASR chat completions when requested"
+        )
+
+        let reasoningTruncatedJSON = #"{"choices":[{"message":{"content":"","reasoning_content":"长篇思考耗尽配额"},"finish_reason":"length"}]}"#.data(using: .utf8)!
+        do {
+            _ = try MeetingCloudPayload.extractCompletionContent(from: reasoningTruncatedJSON)
+            fatalError("Expected length truncation error when reasoning exhausts token budget")
+        } catch {
+            check(
+                error.localizedDescription.contains("长度限制截断"),
+                "Empty content with finish_reason=length reports length truncation instead of incompatible endpoint"
+            )
+        }
+
+        // 14. Malformed LLM JSON recovery: unescaped inner quotes, regex backslashes, literal newlines, trailing commas, and outer-prose braces
+        let malformedLLMJSON = """
+        说明：以下按 {title, summary} 结构输出：
+        ```JSON
+        {
+          "title": "技术经验与团队介绍",
+          "summary": "重点构建"主流价值语料", "特色语料"两类资产，并在光大银行"政策助手": 召回率达95%
+        支持直接供大模型训练。",
+          "topics": [
+            {
+              "start": 10,
+              "title": "RAG与正则切片",
+              "summary": "使用正则 \\d+ 与 \\s+ 配合 [a"b] 规则切分 1700 份制度文档",
+              "points": [
+                {"text": "提出"词表约束"方案", "evidence": ["L2", "L5",],},
+              ],
+              "evidence": ["L2"],
+              "fishbone": null,
+            },
+          ],
+          "conclusions": [],
+          "todos": [],
+          "terms": [{"name": "主流价值语料", "note": "核心语料资产", "heard": ["主流价值饮料"],}],
+        }
+        ```
+        """
+        let repairedParsed = MeetingNotesParser.parse(malformedLLMJSON, times: segTimes, startedAt: 5)
+        check(
+            repairedParsed?.title == "技术经验与团队介绍"
+                && repairedParsed?.summary.contains("主流价值语料") == true
+                && repairedParsed?.topics.first?.summary.contains(#"\d+"#) == true
+                && repairedParsed?.topics.first?.points.first == #"提出"词表约束"方案"#
+                && repairedParsed?.terms.first?.heard == ["主流价值饮料"],
+            "Parser repairs unescaped inner quotes, regex backslashes, literal newlines, trailing commas, and outer braces"
+        )
+
         print("Meeting tests: \(checks) passed")
     }
 }
