@@ -17,10 +17,13 @@ xcrun swiftc \
     -target "$TARGET" \
     -DUNIT_TESTS \
     -framework Cocoa \
+    -framework SwiftUI \
+    -framework ApplicationServices \
     "$ROOT_DIR/Shared/Models.swift" \
     "$ROOT_DIR/Shared/PathFormatter.swift" \
     "$ROOT_DIR/Shared/SharedStore.swift" \
     "$ROOT_DIR/BoFinderApp/CutPasteManager.swift" \
+    "$ROOT_DIR/BoFinderApp/PermissionGuideOverlay.swift" \
     "$ROOT_DIR/Tests/PathFormatterTests.swift" \
     -o "$BUILD_DIR/run_tests"
 
@@ -136,6 +139,7 @@ xcrun swiftc \
     "$ROOT_DIR/BoFinderApp/CutPasteManager.swift" \
     "$ROOT_DIR/BoFinderApp/QuickPopupMenuController.swift" \
     "$ROOT_DIR/BoFinderApp/CloudQuickBarController.swift" \
+    "$ROOT_DIR/BoFinderApp/PermissionGuideOverlay.swift" \
     "$ROOT_DIR/BoFinderApp/EventTapManager.swift" \
     "$ROOT_DIR/BoFinderApp/MeetingModels.swift" \
     "$ROOT_DIR/BoFinderApp/MeetingCapture.swift" \

@@ -291,6 +291,33 @@ struct PathFormatterTests {
                 "incoming-c.txt",
                 "Remaining conflicting file replaced automatically via applyToAll"
             )
+
+            // 12. Accessibility permission guide overlay layout & stationary capsule invariants
+            let pickedBounds = PermissionGuideLayout.selectSystemSettingsBounds(from: [
+                (layer: 3, bounds: CGRect(x: 300, y: 20, width: 900, height: 700)),
+                (layer: 0, bounds: CGRect(x: 520, y: 180, width: 420, height: 300)), // auth sheet
+                (layer: 0, bounds: CGRect(x: 413, y: 30, width: 740, height: 625))   // main System Settings window
+            ])
+            assertEqual(
+                pickedBounds,
+                CGRect(x: 413, y: 30, width: 740, height: 625),
+                "Selects main System Settings window over modal sheets and non-layer-0 windows"
+            )
+            let snappedHUDFrame = PermissionGuideLayout.overlayFrame(
+                forSystemSettingsCGFrame: CGRect(x: 413, y: 30, width: 740, height: 625),
+                primaryScreenHeight: 900
+            )
+            assertEqual(
+                snappedHUDFrame,
+                NSRect(x: 647, y: 255, width: 488, height: 154),
+                "Centers stationary HUD over bottom of System Settings right-hand Accessibility pane"
+            )
+            let pillView = DraggableAppPillNSView(frame: NSRect(x: 0, y: 0, width: 316, height: 54))
+            pillView.layoutSubtreeIfNeeded()
+            assertEqual(pillView.mouseDownCanMoveWindow, false, "Capsule view never drags parent HUD window")
+            assertEqual(pillView.acceptsFirstMouse(for: nil), true, "Capsule view accepts first-mouse drag without focus switch")
+            assertEqual(pillView.hitTest(NSPoint(x: 24, y: 27)) === pillView, true, "Clicking app icon routes directly to capsule drag view")
+            assertEqual(pillView.hitTest(NSPoint(x: 120, y: 27)) === pillView, true, "Clicking app title routes directly to capsule drag view")
         } catch {
             failed += 1
             print("  ❌ Configuration compatibility: \(error)")

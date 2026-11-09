@@ -211,9 +211,9 @@ struct SettingsView: View {
                                     .foregroundColor(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)
                                 Spacer()
-                                Button("前往授权") {
+                                Button("打开系统授权") {
                                     selectedTab = 4
-                                    eventTapManager.checkPermissionAndStartIfPossible(promptIfNeeded: true)
+                                    eventTapManager.requestAccessibilityPermission()
                                 }
                                 .controlSize(.small)
                             }
@@ -428,6 +428,25 @@ struct SettingsView: View {
                         set: { val in cutPasteManager.updateConfig { $0.enableCutAndPasteKeybindings = val } }
                     ))
                     .fontWeight(.medium)
+
+                    if cutPasteManager.state.config.enableCutAndPasteKeybindings && !eventTapManager.isAccessibilityTrusted {
+                        HStack(spacing: 8) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundColor(.orange)
+                            Text("⌘+X / ⌘+V 文件剪切粘贴需要开启「辅助功能」权限后方可在 Finder 中生效。")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Button("打开系统授权") {
+                                selectedTab = 4
+                                eventTapManager.requestAccessibilityPermission()
+                            }
+                            .controlSize(.small)
+                        }
+                        .padding(8)
+                        .background(Color.orange.opacity(0.08))
+                        .cornerRadius(6)
+                    }
 
                     Text("• 在 Finder 中选中文件按 ⌘+X 进入剪切状态，在目标目录按 ⌘+V 直接执行文件移动。\n• 按 Esc 键或重新按 ⌘+C 可随时取消剪切状态。\n• 智能识别重命名文件、搜索框输入等文本编辑状态，不影响文字剪切粘贴。")
                         .font(.system(size: 12))
@@ -653,9 +672,9 @@ struct SettingsView: View {
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                                 Spacer()
-                                Button("前往授权") {
+                                Button("打开系统授权") {
                                     selectedTab = 4
-                                    eventTapManager.checkPermissionAndStartIfPossible(promptIfNeeded: true)
+                                    eventTapManager.requestAccessibilityPermission()
                                 }
                                 .controlSize(.small)
                             }
@@ -704,7 +723,7 @@ struct SettingsView: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(eventTapManager.isAccessibilityTrusted ? (eventTapManager.isEventTapRunning ? "辅助功能已授权，右键快捷栏与快捷键监听运行中" : "辅助功能已授权，事件监听尚未启动") : "需要开启「辅助功能」权限以支持 iCloud 右键快捷栏与 Finder 快捷键")
                                 .fontWeight(.semibold)
-                            Text("在「系统设置 -> 隐私与安全性 -> 辅助功能」中勾选当前运行的 DeskSide。若升级或重编译后开关已勾选仍显示未授权，请先关闭再重新打开该开关（建议固定从 /Applications/DeskSide.app 启动）。")
+                            Text("点击「打开系统授权」将在弹出的「辅助功能」列表下方显示引导浮层，按住 DeskSide 胶囊卡片上拖至列表即可完成授权（若列表中已勾选但因升级重编译未生效，上拖覆盖或重开开关即可；建议固定从 /Applications/DeskSide.app 启动）。")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -713,8 +732,8 @@ struct SettingsView: View {
                         Spacer()
 
                         if !eventTapManager.isAccessibilityTrusted {
-                            Button("请求授权") {
-                                eventTapManager.checkPermissionAndStartIfPossible(promptIfNeeded: true)
+                            Button("打开系统授权") {
+                                eventTapManager.requestAccessibilityPermission()
                             }
                             .buttonStyle(.borderedProminent)
                         } else {

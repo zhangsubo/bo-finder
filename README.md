@@ -13,7 +13,7 @@
 - 保留 `com.bofinder.app`、Finder 扩展标识、IPC 通道和 `~/Library/Application Support/BoFinder/state.json`，直接沿用已有全部设置，不重置为默认值。代码目录和兼容类型仍保留旧名称。
 - 启动时先正常退出旧 BoFinder，无法退出则停止启动；防止新旧版本同时处理文件。DeskSide 自身使用进程锁避免重复运行。
 - 开机启动配置沿用旧标识并更新为当前安装路径。
-- 使用本地 ad-hoc 签名，升级后 macOS 可能要求重新授予辅助功能权限。在「文件工具 → 权限与诊断」中查看；应用不会自动清除已有授权。
+- 使用本地 ad-hoc 签名，升级后 macOS 可能要求重新授予辅助功能权限。在「文件工具 → 权限与诊断」点击「打开系统授权」，可通过辅助功能列表下方的引导浮层将 DeskSide 胶囊卡片直接上拖完成授权；应用不会自动清除已有授权。
 - 两个 logo 源文件和图标生成方式保持不变。
 
 ## 环境变量维护
@@ -123,6 +123,7 @@ bo-finder/
 │   ├── FinderSelectionHelper.swift    # 基于 Accessibility 读取 Finder 选中项、光标命中项与当前目录
 │   ├── FinderExtensionDoctor.swift    # 基于 pluginkit 的 FinderSync 扩展注册与冲突管理
 │   ├── HUDWindowController.swift      # 毛玻璃悬浮提示窗 (HUD Toast)
+│   ├── PermissionGuideOverlay.swift   # 辅助功能授权上拖胶囊引导浮层与自动检测关闭
 │   ├── MeetingModels.swift            # 会议记录、结构化纪要模型、文本续接与回声判重
 │   ├── MeetingCapture.swift           # 麦克风 + Core Audio Process Tap 双音源采集与会议进程检测
 │   ├── MeetingAppleSpeech.swift       # Apple SpeechAnalyzer 流式识别、微停顿断句与声纹环形缓冲

@@ -12,21 +12,52 @@ final class EventTapManager: ObservableObject {
     private var permissionPollTimer: Timer?
 
     private init() {
+        DispatchQueue.main.async { [weak self] in
+            PermissionGuideOverlayController.shared.onAuthorizationDetected = { [weak self] in
+                self?.checkPermissionAndStartIfPossible(promptIfNeeded: false)
+            }
+        }
         checkPermissionAndStartIfPossible()
         startPermissionPolling()
     }
 
     func checkPermissionAndStartIfPossible(promptIfNeeded: Bool = false) {
-        var trusted = AXIsProcessTrusted()
-        if !trusted && promptIfNeeded {
-            let options: NSDictionary = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as NSString: true]
-            trusted = AXIsProcessTrustedWithOptions(options)
-        }
+        let trusted = AXIsProcessTrusted()
         DispatchQueue.main.async {
             self.isAccessibilityTrusted = trusted
         }
-        if trusted && eventTap == nil {
-            setupEventTap()
+        if trusted {
+            if eventTap == nil {
+                setupEventTap()
+            }
+        } else if promptIfNeeded {
+            requestAccessibilityPermission()
+        }
+    }
+
+    func requestAccessibilityPermission() {
+        let trusted = AXIsProcessTrusted()
+        DispatchQueue.main.async {
+            self.isAccessibilityTrusted = trusted
+            if trusted {
+                if self.eventTap == nil {
+                    self.setupEventTap()
+                }
+                PermissionGuideOverlayController.shared.dismissImmediately()
+                HUDWindowController.shared.show(
+                    title: "辅助功能权限已就绪",
+                    subtitle: "右键快捷栏与 Finder 快捷键已启用",
+                    symbolName: "checkmark.circle.fill"
+                )
+                return
+            }
+
+            if let settingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+                let config = NSWorkspace.OpenConfiguration()
+                config.activates = true
+                NSWorkspace.shared.open(settingsURL, configuration: config, completionHandler: nil)
+            }
+            PermissionGuideOverlayController.shared.show()
         }
     }
 

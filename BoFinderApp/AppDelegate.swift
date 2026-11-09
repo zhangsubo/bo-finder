@@ -76,6 +76,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        MainActor.assumeIsolated {
+            PermissionGuideOverlayController.shared.dismissImmediately()
+        }
         MeetingProcessRegistry.shared.terminateAll()
         CutPasteManager.shared.clearCut(showHUD: false)
     }
@@ -259,7 +262,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         if !eventTap.isAccessibilityTrusted {
             let authItem = NSMenuItem(
-                title: "⚠️ 点击开启辅助功能权限 (支持 iCloud 右键快捷栏与 ⌘+X / ⌘+V)...",
+                title: "⚠️ 打开系统授权 (支持 iCloud 右键快捷栏与 ⌘+X / ⌘+V)...",
                 action: #selector(requestAccessibilityPermission(_:)),
                 keyEquivalent: ""
             )
@@ -628,8 +631,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Menu Actions
 
     @objc private func requestAccessibilityPermission(_ sender: Any?) {
-        EventTapManager.shared.checkPermissionAndStartIfPossible(promptIfNeeded: true)
-        SettingsWindowController.shared.showWindow()
+        EventTapManager.shared.requestAccessibilityPermission()
     }
 
     @objc private func moveCutItemsToFrontmostFinder(_ sender: Any?) {
