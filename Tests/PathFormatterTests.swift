@@ -1,3 +1,4 @@
+import Cocoa
 import Foundation
 
 @main
@@ -209,6 +210,86 @@ struct PathFormatterTests {
                 }),
                 false,
                 "Local ~/Downloads file is not falsely flagged as cloud and stops at home directory"
+            )
+
+            // 11. Conflict alert "全部按此进行" checkbox & batch direct-move resolution
+            let conflictAlert = CutMoveBatchRunner.makeConflictAlert(fileName: "杨佳乐.pdf", targetFolder: "面试")
+            conflictAlert.layout()
+            assertEqual(conflictAlert.showsSuppressionButton, true, "Conflict alert enables suppression checkbox")
+            assertEqual(conflictAlert.suppressionButton?.title, "全部按此进行", "Conflict alert checkbox title is 全部按此进行")
+            assertEqual(conflictAlert.suppressionButton?.state, .off, "Conflict alert checkbox defaults to unchecked")
+            assertEqual(conflictAlert.buttons.map(\.title), ["保留两者", "替换", "跳过"], "Conflict alert preserves button order")
+            assertEqual(
+                CutMoveBatchRunner.resolveConflictChoice(response: .alertFirstButtonReturn, suppressionState: .on),
+                FileConflictChoice(resolution: .keepBoth, applyToAll: true),
+                "First button with checkbox on maps to keepBoth + applyToAll"
+            )
+            assertEqual(
+                CutMoveBatchRunner.resolveConflictChoice(response: .alertSecondButtonReturn, suppressionState: .off),
+                FileConflictChoice(resolution: .replace, applyToAll: false),
+                "Second button with checkbox off maps to replace without applyToAll"
+            )
+            assertEqual(
+                CutMoveBatchRunner.resolveConflictChoice(response: .alertThirdButtonReturn, suppressionState: .on),
+                FileConflictChoice(resolution: .skip, applyToAll: true),
+                "Third button with checkbox on maps to skip + applyToAll"
+            )
+
+            let fm = FileManager.default
+            let tempRoot = fm.temporaryDirectory.appendingPathComponent("deskside-conflict-\(UUID().uuidString)")
+            defer { try? fm.removeItem(at: tempRoot) }
+            let srcDir = tempRoot.appendingPathComponent("src")
+            let dstDir = tempRoot.appendingPathComponent("面试")
+            try fm.createDirectory(at: srcDir, withIntermediateDirectories: true)
+            try fm.createDirectory(at: dstDir, withIntermediateDirectories: true)
+
+            for name in ["杨佳乐.pdf", "张三.pdf", "李四.pdf"] {
+                try Data("new-\(name)".utf8).write(to: srcDir.appendingPathComponent(name))
+                try Data("old-\(name)".utf8).write(to: dstDir.appendingPathComponent(name))
+            }
+            var keepBothPrompts = 0
+            let keepBothOutcome = CutMoveBatchRunner.executeDirectMove(
+                sourcePaths: ["杨佳乐.pdf", "张三.pdf", "李四.pdf"].map { srcDir.appendingPathComponent($0).path },
+                toDirectory: dstDir,
+                fileManager: fm,
+                conflictHandler: { _, _ in
+                    keepBothPrompts += 1
+                    return FileConflictChoice(resolution: .keepBoth, applyToAll: true)
+                }
+            )
+            assertEqual(keepBothPrompts, 1, "applyToAll keepBoth prompts only once for 3 conflicts")
+            assertEqual(keepBothOutcome, DirectMoveOutcome(movedCount: 3, skippedCount: 0, lastError: nil), "All 3 files moved when keeping both")
+            assertEqual(fm.fileExists(atPath: srcDir.appendingPathComponent("杨佳乐.pdf").path), false, "Source files removed after batch keepBoth move")
+            assertEqual(
+                try String(contentsOf: dstDir.appendingPathComponent("李四 2.pdf"), encoding: .utf8),
+                "new-李四.pdf",
+                "Batch keepBoth creates numbered copy with incoming content"
+            )
+
+            for name in ["a.txt", "b.txt", "c.txt"] {
+                try Data("incoming-\(name)".utf8).write(to: srcDir.appendingPathComponent(name))
+                try Data("existing-\(name)".utf8).write(to: dstDir.appendingPathComponent(name))
+            }
+            var mixedPrompts = 0
+            let mixedOutcome = CutMoveBatchRunner.executeDirectMove(
+                sourcePaths: ["a.txt", "b.txt", "c.txt"].map { srcDir.appendingPathComponent($0).path },
+                toDirectory: dstDir,
+                fileManager: fm,
+                conflictHandler: { _, _ in
+                    mixedPrompts += 1
+                    if mixedPrompts == 1 {
+                        return FileConflictChoice(resolution: .skip, applyToAll: false)
+                    }
+                    return FileConflictChoice(resolution: .replace, applyToAll: true)
+                }
+            )
+            assertEqual(mixedPrompts, 2, "Unchecked first conflict asks again, checked second conflict applies to remaining")
+            assertEqual(mixedOutcome, DirectMoveOutcome(movedCount: 2, skippedCount: 1, lastError: nil), "Mixed skip then applyToAll replace counts both moved and skipped")
+            assertEqual(fm.fileExists(atPath: srcDir.appendingPathComponent("a.txt").path), true, "Skipped file remains in source folder")
+            assertEqual(
+                try String(contentsOf: dstDir.appendingPathComponent("c.txt"), encoding: .utf8),
+                "incoming-c.txt",
+                "Remaining conflicting file replaced automatically via applyToAll"
             )
         } catch {
             failed += 1

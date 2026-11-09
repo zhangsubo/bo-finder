@@ -1,7 +1,136 @@
 import Cocoa
+#if !UNIT_TESTS
 import Combine
 import ApplicationServices
+#endif
 
+enum FileConflictResolution: Equatable {
+    case keepBoth
+    case replace
+    case skip
+}
+
+struct FileConflictChoice: Equatable {
+    let resolution: FileConflictResolution
+    let applyToAll: Bool
+}
+
+struct DirectMoveOutcome: Equatable {
+    var movedCount: Int = 0
+    var skippedCount: Int = 0
+    var lastError: String?
+}
+
+enum CutMoveBatchRunner {
+    static func makeConflictAlert(fileName: String, targetFolder: String) -> NSAlert {
+        let alert = NSAlert()
+        alert.messageText = "目标文件夹「\(targetFolder)」中已存在同名项目「\(fileName)」"
+        alert.informativeText = "请选择如何处理此同名文件："
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "保留两者")
+        alert.addButton(withTitle: "替换")
+        alert.addButton(withTitle: "跳过")
+        alert.showsSuppressionButton = true
+        alert.suppressionButton?.title = "全部按此进行"
+        return alert
+    }
+
+    static func resolveConflictChoice(
+        response: NSApplication.ModalResponse,
+        suppressionState: NSControl.StateValue?
+    ) -> FileConflictChoice {
+        let resolution: FileConflictResolution
+        switch response {
+        case .alertFirstButtonReturn:
+            resolution = .keepBoth
+        case .alertSecondButtonReturn:
+            resolution = .replace
+        default:
+            resolution = .skip
+        }
+        return FileConflictChoice(
+            resolution: resolution,
+            applyToAll: suppressionState == .on
+        )
+    }
+
+    static func uniqueDestinationURL(for originalURL: URL, fileManager fm: FileManager = .default) -> URL {
+        let dir = originalURL.deletingLastPathComponent()
+        let ext = originalURL.pathExtension
+        let baseName = originalURL.deletingPathExtension().lastPathComponent
+
+        var counter = 2
+        while true {
+            let newName = ext.isEmpty ? "\(baseName) \(counter)" : "\(baseName) \(counter).\(ext)"
+            let candidate = dir.appendingPathComponent(newName)
+            if !fm.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+            counter += 1
+        }
+    }
+
+    static func executeDirectMove(
+        sourcePaths: [String],
+        toDirectory targetDirectory: URL,
+        fileManager fm: FileManager = .default,
+        conflictHandler: (_ fileName: String, _ targetFolder: String) -> FileConflictChoice
+    ) -> DirectMoveOutcome {
+        var outcome = DirectMoveOutcome()
+        var applyToAllResolution: FileConflictResolution?
+        let dstDir = targetDirectory.standardizedFileURL
+
+        for srcPath in sourcePaths {
+            let srcURL = URL(fileURLWithPath: srcPath)
+            guard fm.fileExists(atPath: srcURL.path) else { continue }
+
+            let srcParent = srcURL.deletingLastPathComponent().standardizedFileURL
+            if srcParent == dstDir {
+                continue
+            }
+
+            var dstURL = dstDir.appendingPathComponent(srcURL.lastPathComponent)
+            if fm.fileExists(atPath: dstURL.path) {
+                let resolution: FileConflictResolution
+                if let remembered = applyToAllResolution {
+                    resolution = remembered
+                } else {
+                    let choice = conflictHandler(srcURL.lastPathComponent, dstDir.lastPathComponent)
+                    if choice.applyToAll {
+                        applyToAllResolution = choice.resolution
+                    }
+                    resolution = choice.resolution
+                }
+
+                switch resolution {
+                case .skip:
+                    outcome.skippedCount += 1
+                    continue
+                case .replace:
+                    do {
+                        try fm.removeItem(at: dstURL)
+                    } catch {
+                        outcome.lastError = error.localizedDescription
+                        continue
+                    }
+                case .keepBoth:
+                    dstURL = uniqueDestinationURL(for: dstURL, fileManager: fm)
+                }
+            }
+
+            do {
+                try fm.moveItem(at: srcURL, to: dstURL)
+                outcome.movedCount += 1
+            } catch {
+                outcome.lastError = error.localizedDescription
+            }
+        }
+
+        return outcome
+    }
+}
+
+#if !UNIT_TESTS
 final class CutPasteManager: ObservableObject {
     static let shared = CutPasteManager()
 
@@ -283,45 +412,13 @@ final class CutPasteManager: ObservableObject {
         let sourcePaths = state.cutFilePaths
         guard !sourcePaths.isEmpty else { return }
 
-        let fm = FileManager.default
-        var movedCount = 0
-        var lastError: String?
-
-        for srcPath in sourcePaths {
-            let srcURL = URL(fileURLWithPath: srcPath)
-            guard fm.fileExists(atPath: srcURL.path) else { continue }
-
-            let srcParent = srcURL.deletingLastPathComponent().standardizedFileURL
-            let dstDir = targetDirectory.standardizedFileURL
-            if srcParent == dstDir {
-                continue
+        let outcome = CutMoveBatchRunner.executeDirectMove(
+            sourcePaths: sourcePaths,
+            toDirectory: targetDirectory,
+            conflictHandler: { fileName, targetFolder in
+                self.promptConflictResolution(fileName: fileName, targetFolder: targetFolder)
             }
-
-            var dstURL = dstDir.appendingPathComponent(srcURL.lastPathComponent)
-            if fm.fileExists(atPath: dstURL.path) {
-                let resolution = promptConflictResolution(fileName: srcURL.lastPathComponent, targetFolder: dstDir.lastPathComponent)
-                switch resolution {
-                case .skip:
-                    continue
-                case .replace:
-                    do {
-                        try fm.removeItem(at: dstURL)
-                    } catch {
-                        lastError = error.localizedDescription
-                        continue
-                    }
-                case .keepBoth:
-                    dstURL = uniqueDestinationURL(for: dstURL)
-                }
-            }
-
-            do {
-                try fm.moveItem(at: srcURL, to: dstURL)
-                movedCount += 1
-            } catch {
-                lastError = error.localizedDescription
-            }
-        }
+        )
 
         var nextState = state
         nextState.isCutActive = false
@@ -332,24 +429,38 @@ final class CutPasteManager: ObservableObject {
         isNativeFinderClipboardCut = false
         BoFinderIPC.saveAndBroadcastState(nextState)
 
-        if movedCount > 0 {
-            statusMessage = "已移动 \(movedCount) 个项目"
+        if outcome.movedCount > 0 {
+            statusMessage = outcome.skippedCount > 0
+                ? "已移动 \(outcome.movedCount) 个项目（跳过 \(outcome.skippedCount) 个）"
+                : "已移动 \(outcome.movedCount) 个项目"
             if state.config.playSoundOnAction {
                 NSSound(named: "Glass")?.play()
             }
             if state.config.showHUDFeedback {
+                let subtitle = outcome.skippedCount > 0
+                    ? "目标目录：\(targetDirectory.lastPathComponent) · 已跳过 \(outcome.skippedCount) 个同名项"
+                    : "目标目录：\(targetDirectory.lastPathComponent)"
                 HUDWindowController.shared.show(
-                    title: "已移动 \(movedCount) 个项目",
-                    subtitle: "目标目录：\(targetDirectory.lastPathComponent)",
+                    title: "已移动 \(outcome.movedCount) 个项目",
+                    subtitle: subtitle,
                     symbolName: "arrow.right.doc.on.clipboard"
                 )
             }
-        } else if let err = lastError {
+        } else if let err = outcome.lastError {
             HUDWindowController.shared.show(
                 title: "移动失败",
                 subtitle: err,
                 symbolName: "exclamationmark.triangle.fill"
             )
+        } else if outcome.skippedCount > 0 {
+            statusMessage = "已跳过 \(outcome.skippedCount) 个同名项目"
+            if state.config.showHUDFeedback {
+                HUDWindowController.shared.show(
+                    title: "已跳过 \(outcome.skippedCount) 个同名项目",
+                    subtitle: "同名文件未移动",
+                    symbolName: "arrow.uturn.backward.circle"
+                )
+            }
         } else {
             HUDWindowController.shared.show(
                 title: "无需移动",
@@ -382,47 +493,14 @@ final class CutPasteManager: ObservableObject {
         onStateUpdated?()
     }
 
-    private enum ConflictResolution {
-        case keepBoth
-        case replace
-        case skip
-    }
-
-    private func promptConflictResolution(fileName: String, targetFolder: String) -> ConflictResolution {
+    private func promptConflictResolution(fileName: String, targetFolder: String) -> FileConflictChoice {
         NSApp.activate(ignoringOtherApps: true)
-        let alert = NSAlert()
-        alert.messageText = "目标文件夹「\(targetFolder)」中已存在同名项目「\(fileName)」"
-        alert.informativeText = "请选择如何处理此同名文件："
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "保留两者")
-        alert.addButton(withTitle: "替换")
-        alert.addButton(withTitle: "跳过")
+        let alert = CutMoveBatchRunner.makeConflictAlert(fileName: fileName, targetFolder: targetFolder)
         let response = alert.runModal()
-        switch response {
-        case .alertFirstButtonReturn:
-            return .keepBoth
-        case .alertSecondButtonReturn:
-            return .replace
-        default:
-            return .skip
-        }
-    }
-
-    private func uniqueDestinationURL(for originalURL: URL) -> URL {
-        let fm = FileManager.default
-        let dir = originalURL.deletingLastPathComponent()
-        let ext = originalURL.pathExtension
-        let baseName = originalURL.deletingPathExtension().lastPathComponent
-
-        var counter = 2
-        while true {
-            let newName = ext.isEmpty ? "\(baseName) \(counter)" : "\(baseName) \(counter).\(ext)"
-            let candidate = dir.appendingPathComponent(newName)
-            if !fm.fileExists(atPath: candidate.path) {
-                return candidate
-            }
-            counter += 1
-        }
+        return CutMoveBatchRunner.resolveConflictChoice(
+            response: response,
+            suppressionState: alert.suppressionButton?.state
+        )
     }
 
     // MARK: - Finder Inspection Helpers
@@ -447,3 +525,4 @@ final class CutPasteManager: ObservableObject {
         return URL(fileURLWithPath: desktopPath)
     }
 }
+#endif

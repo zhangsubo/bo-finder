@@ -15,10 +15,12 @@ mkdir -p "$BUILD_DIR"
 xcrun swiftc \
     -sdk "$SDK_PATH" \
     -target "$TARGET" \
+    -DUNIT_TESTS \
     -framework Cocoa \
     "$ROOT_DIR/Shared/Models.swift" \
     "$ROOT_DIR/Shared/PathFormatter.swift" \
     "$ROOT_DIR/Shared/SharedStore.swift" \
+    "$ROOT_DIR/BoFinderApp/CutPasteManager.swift" \
     "$ROOT_DIR/Tests/PathFormatterTests.swift" \
     -o "$BUILD_DIR/run_tests"
 
