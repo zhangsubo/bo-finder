@@ -480,6 +480,40 @@ struct MeetingTests {
             "Parser repairs unescaped inner quotes, regex backslashes, literal newlines, trailing commas, and outer braces"
         )
 
+        // Floating live-notes panel complete hide & mini-card reopen behavior
+        let screenRect = NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let miniRect = NSRect(x: 1100, y: 650, width: 320, height: 238)
+        let restoredFromMini = MeetingFloatingPanelBehavior.reopenedFrame(current: miniRect, visibleScreen: screenRect)
+        check(
+            restoredFromMini?.width == 440 && restoredFromMini?.height == 720 && restoredFromMini?.maxX == 1420,
+            "Reopening hidden floating panel from <360pt mini card restores 440x720 sidebar anchored to top-right"
+        )
+        let normalSidebarRect = NSRect(x: 980, y: 160, width: 440, height: 720)
+        check(
+            MeetingFloatingPanelBehavior.reopenedFrame(current: normalSidebarRect, visibleScreen: screenRect) == nil,
+            "Reopening hidden floating panel preserves >=360pt sidebar/wide frame"
+        )
+
+        var hideCount = 0
+        let testPanel = MeetingFloatingNSPanel(
+            contentRect: normalSidebarRect,
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        testPanel.onHideRequested = { hideCount += 1 }
+        check(
+            testPanel.standardWindowButton(.miniaturizeButton)?.isEnabled == true
+                && testPanel.standardWindowButton(.closeButton)?.isEnabled == true,
+            "Floating panel enables native close and yellow minimize traffic-light buttons"
+        )
+        testPanel.miniaturize(nil)
+        testPanel.performMiniaturize(nil)
+        check(
+            hideCount == 2 && !testPanel.isMiniaturized,
+            "Yellow minimize action routes to complete hide instead of leaving a minimized/small window"
+        )
+
         print("Meeting tests: \(checks) passed")
     }
 }

@@ -41,6 +41,7 @@ xcrun swiftc -sdk "$SDK_PATH" -target "$TARGET" \
     "$ROOT_DIR/BoFinderApp/MeetingCapture.swift" \
     "$ROOT_DIR/BoFinderApp/MeetingSpeakerID.swift" \
     "$ROOT_DIR/BoFinderApp/MeetingNotes.swift" \
+    "$ROOT_DIR/BoFinderApp/MeetingFloatingPanel.swift" \
     "$ROOT_DIR/BoFinderApp/AppUpdater.swift" \
     "$ROOT_DIR/Tests/MeetingTests.swift" -o "$BUILD_DIR/run_meeting_tests"
 "$BUILD_DIR/run_meeting_tests"

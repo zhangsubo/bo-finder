@@ -102,7 +102,7 @@ struct MeetingView: View {
                 Button {
                     floatingPanel.toggle()
                 } label: {
-                    Label(floatingPanel.isVisible ? "收起桌边纪要窗" : "打开桌边纪要窗", systemImage: "sidebar.right")
+                    Label(floatingPanel.isVisible ? "隐藏桌边纪要窗" : "打开桌边纪要窗", systemImage: floatingPanel.isVisible ? "eye.slash" : "sidebar.right")
                 }
                 Button("会议设置") { settings = true }
                 Menu("开始录音") {
@@ -128,7 +128,7 @@ struct MeetingView: View {
                 Spacer()
 
                 if let id = manager.active {
-                    Button("桌边悬浮窗") { floatingPanel.show() }
+                    Button(floatingPanel.isVisible ? "隐藏悬浮窗" : "桌边悬浮窗") { floatingPanel.toggle() }
                     Button("进入实时详情") {
                         manager.selected = id
                         detailTab = 0

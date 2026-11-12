@@ -2,6 +2,54 @@ import AppKit
 import Combine
 import SwiftUI
 
+enum MeetingFloatingPanelBehavior {
+    static let miniThresholdWidth: CGFloat = 360
+    static let sidebarWidth: CGFloat = 440
+    static let sidebarHeight: CGFloat = 720
+
+    static func anchoredFrame(
+        from current: NSRect,
+        width: CGFloat,
+        height: CGFloat? = nil,
+        visibleScreen: NSRect
+    ) -> NSRect {
+        var frame = current
+        let top = frame.maxY
+        let right = frame.maxX
+        frame.size.width = width
+        if let height {
+            frame.size.height = min(height, visibleScreen.height - 28)
+        }
+        frame.origin.x = min(max(visibleScreen.minX + 8, right - width), visibleScreen.maxX - width - 8)
+        frame.origin.y = max(visibleScreen.minY + 8, top - frame.size.height)
+        return frame
+    }
+
+    /// Ensures reopening a hidden floating panel never stays trapped in the `<360pt` mini card.
+    static func reopenedFrame(current: NSRect, visibleScreen: NSRect) -> NSRect? {
+        guard current.width < miniThresholdWidth else { return nil }
+        return anchoredFrame(
+            from: current,
+            width: sidebarWidth,
+            height: sidebarHeight,
+            visibleScreen: visibleScreen
+        )
+    }
+}
+
+final class MeetingFloatingNSPanel: NSPanel {
+    var onHideRequested: (() -> Void)?
+
+    override func miniaturize(_ sender: Any?) {
+        onHideRequested?()
+    }
+
+    override func performMiniaturize(_ sender: Any?) {
+        onHideRequested?()
+    }
+}
+
+#if !MEETING_UNIT_TESTS
 // MARK: - Non-Activating First-Click Hosting View
 
 /// Allows single-click interaction inside a `.nonactivatingPanel` without stealing focus from Zoom / Tencent Meeting / Feishu.
@@ -29,7 +77,7 @@ final class MeetingFloatingPanelController: NSObject, ObservableObject, NSWindow
     @Published private(set) var isVisible: Bool = false
     let commands = PassthroughSubject<PanelCommand, Never>()
 
-    private var panel: NSPanel?
+    private var panel: MeetingFloatingNSPanel?
 
     private override init() {
         super.init()
@@ -44,14 +92,16 @@ final class MeetingFloatingPanelController: NSObject, ObservableObject, NSWindow
     }
 
     func show() {
+        let wasVisible = isVisible
         let manager = MeetingManager.shared
         if panel == nil {
-            let p = NSPanel(
+            let p = MeetingFloatingNSPanel(
                 contentRect: defaultFrame(),
-                styleMask: [.titled, .closable, .resizable, .fullSizeContentView, .nonactivatingPanel],
+                styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView, .nonactivatingPanel],
                 backing: .buffered,
                 defer: false
             )
+            p.onHideRequested = { [weak self] in self?.hide() }
             p.titleVisibility = .hidden
             p.titlebarAppearsTransparent = true
             p.isMovableByWindowBackground = true
@@ -64,7 +114,7 @@ final class MeetingFloatingPanelController: NSObject, ObservableObject, NSWindow
             // Screen-share & screenshot invisible by default (.none), unless user explicitly opts in (.readOnly).
             p.sharingType = manager.config.floatingPanelCapturable ? .readOnly : .none
             p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-            p.minSize = NSSize(width: 290, height: 190)
+            p.minSize = NSSize(width: 290, height: 198)
             p.backgroundColor = .windowBackgroundColor
 
             let root = MeetingFloatingPanelRootView(
@@ -78,6 +128,12 @@ final class MeetingFloatingPanelController: NSObject, ObservableObject, NSWindow
                 p.setFrame(defaultFrame(), display: false)
             }
             panel = p
+        }
+        if !wasVisible,
+           let p = panel,
+           let screen = p.screen ?? NSScreen.main ?? NSScreen.screens.first,
+           let restored = MeetingFloatingPanelBehavior.reopenedFrame(current: p.frame, visibleScreen: screen.visibleFrame) {
+            p.setFrame(restored, display: false)
         }
         syncSharingType()
         panel?.orderFrontRegardless()
@@ -102,6 +158,11 @@ final class MeetingFloatingPanelController: NSObject, ObservableObject, NSWindow
         commands.send(command)
     }
 
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        hide()
+        return false
+    }
+
     func windowWillClose(_ notification: Notification) {
         isVisible = false
     }
@@ -109,15 +170,12 @@ final class MeetingFloatingPanelController: NSObject, ObservableObject, NSWindow
     /// Resizes between card (<360), sidebar (440), and wide split (840) keeping the top-right corner anchored.
     func resize(width: CGFloat, height: CGFloat? = nil) {
         guard let p = panel, let screen = p.screen ?? NSScreen.main else { return }
-        var frame = p.frame
-        let top = frame.maxY
-        let right = frame.maxX
-        frame.size.width = width
-        if let height {
-            frame.size.height = min(height, screen.visibleFrame.height - 28)
-        }
-        frame.origin.x = min(max(screen.visibleFrame.minX + 8, right - width), screen.visibleFrame.maxX - width - 8)
-        frame.origin.y = max(screen.visibleFrame.minY + 8, top - frame.size.height)
+        let frame = MeetingFloatingPanelBehavior.anchoredFrame(
+            from: p.frame,
+            width: width,
+            height: height,
+            visibleScreen: screen.visibleFrame
+        )
         p.setFrame(frame, display: true, animate: true)
     }
 
@@ -210,7 +268,7 @@ private struct MeetingFloatingPanelRootView: View {
         collapsedAt = isLive ? manager.elapsed : (record?.duration ?? 0)
         seenItems = collectNoteKeys()
         catchUpMode = false
-        onResize(320, 230)
+        onResize(320, 238)
     }
 
     private func collectNoteKeys() -> Set<String> {
@@ -316,13 +374,11 @@ private struct MeetingFloatingPanelRootView: View {
                     onResize(wide ? 440 : 840, nil)
                 }
 
-                panelIconButton(symbol: "minus", help: "收起为迷你补课小卡") {
+                panelIconButton(symbol: "pip.enter", help: "切换为桌边迷你小窗") {
                     collapseToCard()
                 }
 
-                panelIconButton(symbol: "xmark", help: "关闭桌边悬浮窗") {
-                    MeetingFloatingPanelController.shared.hide()
-                }
+                hideWindowButton
             }
 
             HStack(spacing: 6) {
@@ -364,7 +420,7 @@ private struct MeetingFloatingPanelRootView: View {
             }
         }
         .padding(.horizontal, 18)
-        .padding(.top, 32)
+        .padding(.top, 34)
         .padding(.bottom, 10)
     }
 
@@ -643,16 +699,14 @@ private struct MeetingFloatingPanelRootView: View {
                             .foregroundColor(.secondary)
                     }
                 }
-                Spacer()
+                Spacer(minLength: 4)
                 if manager.config.floatingPanelCapturable {
                     MeetingBreathingDot(color: .orange)
                 }
                 panelIconButton(symbol: "arrow.up.left.and.arrow.down.right", help: "展开侧边纪要窗") {
                     onResize(440, 720)
                 }
-                panelIconButton(symbol: "xmark", help: "关闭悬浮窗") {
-                    MeetingFloatingPanelController.shared.hide()
-                }
+                hideWindowButton
             }
 
             if catchUpMode {
@@ -693,7 +747,12 @@ private struct MeetingFloatingPanelRootView: View {
                         catchUpMode = false
                         collapsedAt = nowElapsed
                         seenItems = collectNoteKeys()
-                        onResize(320, 230)
+                        onResize(320, 238)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    Button("彻底隐藏") {
+                        MeetingFloatingPanelController.shared.hide()
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
@@ -754,9 +813,29 @@ private struct MeetingFloatingPanelRootView: View {
             }
         }
         .padding(.horizontal, 16)
-        .padding(.top, 28)
+        .padding(.top, 36)
         .padding(.bottom, 14)
         .ignoresSafeArea(.container, edges: .top)
+    }
+
+    private var hideWindowButton: some View {
+        Button {
+            MeetingFloatingPanelController.shared.hide()
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: "eye.slash")
+                    .font(.system(size: 11, weight: .medium))
+                Text("隐藏")
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .foregroundColor(.secondary)
+            .padding(.horizontal, 8)
+            .frame(height: 26)
+            .background(RoundedRectangle(cornerRadius: 6).fill(Color.secondary.opacity(0.10)))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("彻底隐藏实时纪要窗口（后台继续录音，可从顶部菜单栏或主界面重新打开）")
     }
 
     private func panelIconButton(symbol: String, help: String, action: @escaping () -> Void) -> some View {
@@ -766,6 +845,7 @@ private struct MeetingFloatingPanelRootView: View {
                 .foregroundColor(.secondary)
                 .frame(width: 26, height: 26)
                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.secondary.opacity(0.08)))
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help(help)
@@ -1534,3 +1614,4 @@ struct MeetingRichTranscriptView: View {
         return out
     }
 }
+#endif
