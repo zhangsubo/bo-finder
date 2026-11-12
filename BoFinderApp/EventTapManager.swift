@@ -3,9 +3,14 @@ import ApplicationServices
 
 final class EventTapManager: ObservableObject {
     static let shared = EventTapManager()
+    private static let hasEverGrantedKey = "deskside.hasEverGrantedAccessibility"
 
     @Published private(set) var isAccessibilityTrusted: Bool = false
     @Published private(set) var isEventTapRunning: Bool = false
+
+    var hasEverGrantedAccessibility: Bool {
+        UserDefaults.standard.bool(forKey: Self.hasEverGrantedKey)
+    }
 
     fileprivate var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
@@ -21,8 +26,15 @@ final class EventTapManager: ObservableObject {
         startPermissionPolling()
     }
 
+    private func recordAccessibilityGrantedIfNeeded(_ trusted: Bool) {
+        if trusted && !hasEverGrantedAccessibility {
+            UserDefaults.standard.set(true, forKey: Self.hasEverGrantedKey)
+        }
+    }
+
     func checkPermissionAndStartIfPossible(promptIfNeeded: Bool = false) {
         let trusted = AXIsProcessTrusted()
+        recordAccessibilityGrantedIfNeeded(trusted)
         DispatchQueue.main.async {
             self.isAccessibilityTrusted = trusted
         }
@@ -37,9 +49,10 @@ final class EventTapManager: ObservableObject {
 
     func requestAccessibilityPermission() {
         let trusted = AXIsProcessTrusted()
-        DispatchQueue.main.async {
-            self.isAccessibilityTrusted = trusted
-            if trusted {
+        recordAccessibilityGrantedIfNeeded(trusted)
+        if trusted {
+            DispatchQueue.main.async {
+                self.isAccessibilityTrusted = true
                 if self.eventTap == nil {
                     self.setupEventTap()
                 }
@@ -49,15 +62,25 @@ final class EventTapManager: ObservableObject {
                     subtitle: "右键快捷栏与 Finder 快捷键已启用",
                     symbolName: "checkmark.circle.fill"
                 )
-                return
             }
+            return
+        }
 
-            if let settingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
-                let config = NSWorkspace.OpenConfiguration()
-                config.activates = true
-                NSWorkspace.shared.open(settingsURL, configuration: config, completionHandler: nil)
+        let bundleID = Bundle.main.bundleIdentifier
+        DispatchQueue.global(qos: .userInitiated).async {
+            let didCleanStale = PermissionGuideLayout.resetAccessibilityTCCEntryIfNeeded(
+                isCurrentlyTrusted: false,
+                bundleIdentifier: bundleID
+            )
+            DispatchQueue.main.async {
+                self.isAccessibilityTrusted = false
+                if let settingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+                    let config = NSWorkspace.OpenConfiguration()
+                    config.activates = true
+                    NSWorkspace.shared.open(settingsURL, configuration: config, completionHandler: nil)
+                }
+                PermissionGuideOverlayController.shared.show(didAutoCleanStaleRecord: didCleanStale)
             }
-            PermissionGuideOverlayController.shared.show()
         }
     }
 
@@ -65,6 +88,7 @@ final class EventTapManager: ObservableObject {
         permissionPollTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             let trusted = AXIsProcessTrusted()
+            self.recordAccessibilityGrantedIfNeeded(trusted)
             if trusted != self.isAccessibilityTrusted {
                 self.isAccessibilityTrusted = trusted
             }

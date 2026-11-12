@@ -13,7 +13,7 @@
 - 保留 `com.bofinder.app`、Finder 扩展标识、IPC 通道和 `~/Library/Application Support/BoFinder/state.json`，直接沿用已有全部设置，不重置为默认值。代码目录和兼容类型仍保留旧名称。
 - 启动时先正常退出旧 BoFinder，无法退出则停止启动；防止新旧版本同时处理文件。DeskSide 自身使用进程锁避免重复运行。
 - 开机启动配置沿用旧标识并更新为当前安装路径。
-- 使用本地 ad-hoc 签名，升级后 macOS 可能要求重新授予辅助功能权限。在「文件工具 → 权限与诊断」点击「打开系统授权」，可通过辅助功能列表下方的引导浮层将 DeskSide 胶囊卡片直接上拖完成授权；应用不会自动清除已有授权。
+- 默认发布使用 ad-hoc 签名：未配置本机证书的设备升级后若辅助功能失效，应用会自动清理旧版失效授权记录并弹出引导浮层，直接将 DeskSide 胶囊卡片上拖即可生效（无需手动先删旧记录）；本机执行一次 `./scripts/setup_local_cert.sh` 配置自签名证书后，本地编译与自动更新均会自动重签并永久继承权限。
 - 两个 logo 源文件和图标生成方式保持不变。
 
 ## 环境变量维护
@@ -145,6 +145,7 @@ bo-finder/
 │   └── BoFinderSync.entitlements      # 扩展标准沙盒配置
 ├── scripts/
 │   ├── generate_icon.swift            # 自动生成 AppIcon.icns 应用图标脚本
+│   ├── setup_local_cert.sh            # 一键生成并信任本机代码签名证书（实现本地编译与更新永久免重授）
 │   ├── update_local.sh                # 等待 GitHub Action 完成并同步更新本地 /Applications/DeskSide.app
 │   ├── benchmark_apple_speech.swift   # Apple 原生流式语音识别基准测试工具
 │   └── test_meeting_cloud.py          # Chat Completions 接口契约测试脚本

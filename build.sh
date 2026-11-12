@@ -161,11 +161,22 @@ xcrun swiftc \
     -o "$APP_BUNDLE/Contents/MacOS/DeskSide"
 
 echo "==> [5/5] Code signing bundles..."
-codesign --force --sign - \
+SIGN_IDENTITY="${DESKSIDE_SIGN_IDENTITY:-}"
+if [[ -z "$SIGN_IDENTITY" && "${GITHUB_ACTIONS:-}" != "true" ]]; then
+    SIGN_IDENTITY="$(/usr/bin/security find-identity -v -p codesigning 2>/dev/null | /usr/bin/awk '/"DeskSide Local Signer"/ && $0 !~ /CSSMERR_/ { print $2; exit }')"
+fi
+if [[ -n "$SIGN_IDENTITY" && "$SIGN_IDENTITY" != "-" ]]; then
+    echo "    Using local signing identity: $SIGN_IDENTITY"
+else
+    SIGN_IDENTITY="-"
+    echo "    Using ad-hoc signing (-)"
+fi
+
+codesign --force --sign "$SIGN_IDENTITY" \
     --entitlements "$ROOT_DIR/BoFinderSync/BoFinderSync.entitlements" \
     "$APPEX_BUNDLE"
 
-codesign --force --sign - \
+codesign --force --sign "$SIGN_IDENTITY" \
     --entitlements "$ROOT_DIR/BoFinderApp/BoFinder.entitlements" \
     "$APP_BUNDLE"
 

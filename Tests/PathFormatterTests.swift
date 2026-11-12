@@ -318,6 +318,52 @@ struct PathFormatterTests {
             assertEqual(pillView.acceptsFirstMouse(for: nil), true, "Capsule view accepts first-mouse drag without focus switch")
             assertEqual(pillView.hitTest(NSPoint(x: 24, y: 27)) === pillView, true, "Clicking app icon routes directly to capsule drag view")
             assertEqual(pillView.hitTest(NSPoint(x: 120, y: 27)) === pillView, true, "Clicking app title routes directly to capsule drag view")
+
+            // 13. Stale Accessibility TCC cleanup & silent-update re-authorization policy
+            var resetCalls: [String] = []
+            let skippedTrusted = PermissionGuideLayout.resetAccessibilityTCCEntryIfNeeded(
+                isCurrentlyTrusted: true,
+                bundleIdentifier: "com.bofinder.app",
+                runner: { id in resetCalls.append(id); return true }
+            )
+            assertEqual(skippedTrusted, false, "Never resets Accessibility TCC record when already trusted")
+            assertEqual(resetCalls.isEmpty, true, "Runner not invoked when Accessibility is already trusted")
+
+            let cleanedUntrusted = PermissionGuideLayout.resetAccessibilityTCCEntryIfNeeded(
+                isCurrentlyTrusted: false,
+                bundleIdentifier: "com.bofinder.app",
+                runner: { id in resetCalls.append(id); return true }
+            )
+            assertEqual(cleanedUntrusted, true, "Auto-cleans stale Accessibility TCC record before opening guide when untrusted")
+            assertEqual(resetCalls, ["com.bofinder.app"], "Passes exact bundle ID to TCC reset runner")
+
+            assertEqual(
+                PermissionGuideLayout.shouldAutoPromptReauthorizationAfterSilentUpdate(
+                    isSilentRelaunch: true,
+                    isCurrentlyTrusted: false,
+                    hasEverGrantedAccessibility: true
+                ),
+                true,
+                "Prompts re-authorization after silent ad-hoc update when user previously granted Accessibility"
+            )
+            assertEqual(
+                PermissionGuideLayout.shouldAutoPromptReauthorizationAfterSilentUpdate(
+                    isSilentRelaunch: true,
+                    isCurrentlyTrusted: true,
+                    hasEverGrantedAccessibility: true
+                ),
+                false,
+                "Does not prompt after silent update when local-cert re-signing kept Accessibility trusted"
+            )
+            assertEqual(
+                PermissionGuideLayout.shouldAutoPromptReauthorizationAfterSilentUpdate(
+                    isSilentRelaunch: true,
+                    isCurrentlyTrusted: false,
+                    hasEverGrantedAccessibility: false
+                ),
+                false,
+                "Does not nag users who never enabled Accessibility on silent update"
+            )
         } catch {
             failed += 1
             print("  ❌ Configuration compatibility: \(error)")

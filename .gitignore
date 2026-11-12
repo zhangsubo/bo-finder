@@ -18,3 +18,11 @@ DerivedData/
 *.xcodeproj/project.xcworkspace/
 *.xcodeproj/xcuserdata/
 *.xcworkspace/xcuserdata/
+
+# Local signing certificates & keys (never commit)
+*.p12
+*.pfx
+*.pem
+*.key
+*.cer
+*.crt

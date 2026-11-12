@@ -723,7 +723,7 @@ struct SettingsView: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(eventTapManager.isAccessibilityTrusted ? (eventTapManager.isEventTapRunning ? "辅助功能已授权，右键快捷栏与快捷键监听运行中" : "辅助功能已授权，事件监听尚未启动") : "需要开启「辅助功能」权限以支持 iCloud 右键快捷栏与 Finder 快捷键")
                                 .fontWeight(.semibold)
-                            Text("点击「打开系统授权」将在弹出的「辅助功能」列表下方显示引导浮层，按住 DeskSide 胶囊卡片上拖至列表即可完成授权（若列表中已勾选但因升级重编译未生效，上拖覆盖或重开开关即可；建议固定从 /Applications/DeskSide.app 启动）。")
+                            Text("点击「打开系统授权」会自动清理旧版失效授权记录并在「辅助功能」列表下方弹出引导浮层，直接按住 DeskSide 胶囊卡片上拖至列表并确认开关开启即可生效（无需手动先删旧记录；建议固定从 /Applications/DeskSide.app 启动）。")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)

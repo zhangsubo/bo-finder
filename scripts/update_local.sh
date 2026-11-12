@@ -40,7 +40,24 @@ ditto -x -k "$ZIP_FILE" "$UNPACK_DIR"
 NEW_APP="$UNPACK_DIR/DeskSide.app"
 BUNDLE_ID="$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$NEW_APP/Contents/Info.plist")"
 [[ "$BUNDLE_ID" == "com.bofinder.app" ]] || { echo "Error: unexpected Bundle ID $BUNDLE_ID" >&2; exit 1; }
+xattr -dr com.apple.quarantine "$NEW_APP" 2>/dev/null || true
 codesign --verify --deep --strict "$NEW_APP"
+
+LOCAL_SIGN_ID="${DESKSIDE_SIGN_IDENTITY:-$(/usr/bin/security find-identity -v -p codesigning 2>/dev/null | /usr/bin/awk '/"DeskSide Local Signer"/ && $0 !~ /CSSMERR_/ { print $2; exit }')}"
+if [[ -n "$LOCAL_SIGN_ID" && "$LOCAL_SIGN_ID" != "-" ]]; then
+    echo "==> Re-signing bundle with local certificate ($LOCAL_SIGN_ID)..."
+    RESIGN_APP="$WORK_DIR/resigned-DeskSide.app"
+    ditto "$NEW_APP" "$RESIGN_APP"
+    if codesign --force --preserve-metadata=entitlements --sign "$LOCAL_SIGN_ID" "$RESIGN_APP/Contents/PlugIns/BoFinderSync.appex" &&
+       codesign --force --preserve-metadata=entitlements --sign "$LOCAL_SIGN_ID" "$RESIGN_APP" &&
+       codesign --verify --deep --strict "$RESIGN_APP"; then
+        rm -rf "$NEW_APP"
+        mv "$RESIGN_APP" "$NEW_APP"
+    else
+        echo "    Warning: local re-signing failed; keeping original ad-hoc signature." >&2
+        rm -rf "$RESIGN_APP"
+    fi
+fi
 
 echo "==> Stopping running DeskSide (if active)..."
 osascript -e 'tell application id "com.bofinder.app" to quit' >/dev/null 2>&1 || true

@@ -46,11 +46,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let silentRelaunch = CommandLine.arguments.contains("--updated-silently")
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.2.0"
         if silentRelaunch {
-            HUDWindowController.shared.show(
-                title: "DeskSide 已自动更新至 v\(version)",
-                subtitle: "GitHub Action 最新构建已生效",
-                symbolName: "arrow.down.circle.fill"
-            )
+            if PermissionGuideLayout.shouldAutoPromptReauthorizationAfterSilentUpdate(
+                isSilentRelaunch: true,
+                isCurrentlyTrusted: AXIsProcessTrusted(),
+                hasEverGrantedAccessibility: EventTapManager.shared.hasEverGrantedAccessibility
+            ) {
+                HUDWindowController.shared.show(
+                    title: "DeskSide 已更新至 v\(version)",
+                    subtitle: "已自动清理旧版记录，请上拖卡片完成重新授权",
+                    symbolName: "hand.raised.fill"
+                )
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    EventTapManager.shared.requestAccessibilityPermission()
+                }
+            } else {
+                HUDWindowController.shared.show(
+                    title: "DeskSide 已自动更新至 v\(version)",
+                    subtitle: "GitHub Action 最新构建已生效",
+                    symbolName: "arrow.down.circle.fill"
+                )
+            }
         } else {
             HUDWindowController.shared.show(
                 title: "DeskSide 已启动",

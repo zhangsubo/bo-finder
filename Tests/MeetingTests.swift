@@ -514,6 +514,29 @@ struct MeetingTests {
             "Yellow minimize action routes to complete hide instead of leaving a minimized/small window"
         )
 
+        // Local self-signed identity parsing for AppUpdater auto-resigning
+        check(
+            AppUpdaterLogic.parseLocalSigningIdentity(from: "     0 valid identities found\n") == nil,
+            "Returns nil when no local code-signing identity exists on external user Mac"
+        )
+        let untrustedOut = """
+          1) 87E2CA34BC9AB5543F97BDA3EEF26C838B129700 "DeskSide Local Signer" (CSSMERR_TP_NOT_TRUSTED)
+             1 identities found
+        """
+        check(
+            AppUpdaterLogic.parseLocalSigningIdentity(from: untrustedOut) == nil,
+            "Ignores untrusted self-signed certificate lines with CSSMERR_* errors"
+        )
+        let validOut = """
+          1) 1111111111111111111111111111111111111111 "Apple Development: Other"
+          2) 87E2CA34BC9AB5543F97BDA3EEF26C838B129700 "DeskSide Local Signer"
+             2 valid identities found
+        """
+        check(
+            AppUpdaterLogic.parseLocalSigningIdentity(from: validOut) == "87E2CA34BC9AB5543F97BDA3EEF26C838B129700",
+            "Extracts exact 40-char SHA-1 hash for trusted DeskSide Local Signer identity"
+        )
+
         print("Meeting tests: \(checks) passed")
     }
 }

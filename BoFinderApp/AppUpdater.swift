@@ -37,6 +37,26 @@ enum AppUpdaterLogic {
         }
         return nil
     }
+
+    static let localSignerCommonName = "DeskSide Local Signer"
+
+    /// Extracts the 40-char SHA-1 identity hash for `commonName` from `security find-identity -v -p codesigning` output.
+    /// Ignores untrusted/revoked lines (`CSSMERR_*`) and returns `nil` when absent.
+    static func parseLocalSigningIdentity(
+        from securityOutput: String,
+        commonName: String = localSignerCommonName
+    ) -> String? {
+        let quotedName = "\"\(commonName)\""
+        for rawLine in securityOutput.split(whereSeparator: \.isNewline) {
+            let line = String(rawLine)
+            guard line.contains(quotedName), !line.contains("CSSMERR_") else { continue }
+            let tokens = line.split(whereSeparator: \.isWhitespace)
+            if let hashToken = tokens.first(where: { $0.count == 40 && $0.allSatisfy(\.isHexDigit) }) {
+                return String(hashToken)
+            }
+        }
+        return nil
+    }
 }
 
 #if !MEETING_UNIT_TESTS
@@ -277,6 +297,11 @@ final class AppUpdater: ObservableObject {
             }
             try await runTool("/usr/bin/codesign", arguments: ["--verify", "--deep", "--strict", newAppURL.path])
 
+            var stagedAppURL = newAppURL
+            if let resignedURL = await resignWithLocalIdentityIfAvailable(appBundleURL: newAppURL, workDir: workDir) {
+                stagedAppURL = resignedURL
+            }
+
             let swapURL = workDir.appendingPathComponent("swap.sh")
             try Self.swapScript.write(to: swapURL, atomically: true, encoding: .utf8)
 
@@ -286,7 +311,7 @@ final class AppUpdater: ObservableObject {
                 swapURL.path,
                 String(getpid()),
                 appURL.path,
-                newAppURL.path,
+                stagedAppURL.path,
                 workDir.path,
                 silentRelaunch ? "--updated-silently" : ""
             ]
@@ -389,6 +414,62 @@ final class AppUpdater: ObservableObject {
             } catch {
                 continuation.resume(throwing: error)
             }
+        }
+    }
+
+    private func runToolOutput(_ path: String, arguments: [String]) async throws -> String {
+        try await Task.detached {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: path)
+            process.arguments = arguments
+            let outPipe = Pipe()
+            process.standardOutput = outPipe
+            process.standardError = FileHandle.nullDevice
+            try process.run()
+            let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else {
+                throw UpdateFailure(message: "\(URL(fileURLWithPath: path).lastPathComponent) 执行失败")
+            }
+            return String(decoding: data, as: UTF8.self)
+        }.value
+    }
+
+    /// Re-signs a verified update bundle with the user's trusted local certificate ("DeskSide Local Signer")
+    /// when present in Keychain, preserving embedded entitlements so TCC grants persist across releases.
+    /// Silently returns `nil` on external users' Macs or if re-signing fails, keeping the original ad-hoc bundle.
+    private func resignWithLocalIdentityIfAvailable(appBundleURL: URL, workDir: URL) async -> URL? {
+        guard let securityOut = try? await runToolOutput(
+            "/usr/bin/security",
+            arguments: ["find-identity", "-v", "-p", "codesigning"]
+        ),
+        let signIdentity = AppUpdaterLogic.parseLocalSigningIdentity(from: securityOut) else {
+            return nil
+        }
+
+        statusMessage = "正在使用本机信任证书重签更新包…"
+        let resignedDir = workDir.appendingPathComponent("resigned", isDirectory: true)
+        let resignedAppURL = resignedDir.appendingPathComponent("DeskSide.app")
+        let appexURL = resignedAppURL.appendingPathComponent("Contents/PlugIns/BoFinderSync.appex")
+        do {
+            try FileManager.default.createDirectory(at: resignedDir, withIntermediateDirectories: true)
+            try await runTool("/usr/bin/ditto", arguments: [appBundleURL.path, resignedAppURL.path])
+            _ = try? await runToolOutput("/usr/bin/xattr", arguments: ["-dr", "com.apple.quarantine", resignedAppURL.path])
+            if FileManager.default.fileExists(atPath: appexURL.path) {
+                try await runTool(
+                    "/usr/bin/codesign",
+                    arguments: ["--force", "--preserve-metadata=entitlements", "--sign", signIdentity, appexURL.path]
+                )
+            }
+            try await runTool(
+                "/usr/bin/codesign",
+                arguments: ["--force", "--preserve-metadata=entitlements", "--sign", signIdentity, resignedAppURL.path]
+            )
+            try await runTool("/usr/bin/codesign", arguments: ["--verify", "--deep", "--strict", resignedAppURL.path])
+            return resignedAppURL
+        } catch {
+            try? FileManager.default.removeItem(at: resignedDir)
+            return nil
         }
     }
 
