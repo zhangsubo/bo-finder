@@ -37,6 +37,8 @@ struct SettingsView: View {
                         Label("文件工具", systemImage: "folder").foregroundColor(.secondary)
                     } else if selectedPage == "env" {
                         Label("环境变量", systemImage: "terminal").foregroundColor(.secondary)
+                    } else if selectedPage == "gateway" {
+                        Label("安全网关", systemImage: "checkmark.shield").foregroundColor(.secondary)
                     }
                 }
                 .padding(.horizontal, 28).frame(height: 48)
@@ -46,7 +48,12 @@ struct SettingsView: View {
                     case "env":
                         EnvView()
                     case "gateway":
-                        comingSoon(title: "安全网关", symbol: "checkmark.shield", detail: "通过手机确认 Agent 的敏感操作。", note: "让每一次授权，都由你决定。")
+                        comingSoon(
+                            title: "安全网关",
+                            symbol: "checkmark.shield",
+                            detail: "拦截发往大模型与推送到 GitHub 的密钥及敏感凭证。",
+                            note: "独立本地守护引擎 · 优先接入 Surge / 开源 mitmproxy 透明捕获（或回退自带代理） · 联动环境变量密钥库零误报防护。"
+                        )
                     case "meetings":
                         MeetingView()
                     case "settings": globalSettings
