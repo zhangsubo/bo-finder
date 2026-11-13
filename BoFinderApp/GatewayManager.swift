@@ -920,6 +920,32 @@ final class GatewayManager: ObservableObject {
         }
     }
 
+    @discardableResult
+    func addAllowlistBatch(rawText: String) -> (added: Int, repaired: Int, skippedDuplicates: Int) {
+        var outcome = (added: 0, repaired: 0, skippedDuplicates: 0)
+        updateConfig { cfg in
+            outcome = GatewayAllowlistBatchParser.mergeIntoAllowlist(&cfg.allowlist, rawText: rawText)
+        }
+        if outcome.added > 0 || outcome.repaired > 0 {
+            var details: [String] = []
+            if outcome.added > 0 {
+                details.append("新增 \(outcome.added) 条")
+            }
+            if outcome.repaired > 0 {
+                details.append("修正 \(outcome.repaired) 条指纹类型")
+            }
+            if outcome.skippedDuplicates > 0 {
+                details.append("跳过重复 \(outcome.skippedDuplicates) 条")
+            }
+            HUDWindowController.shared.show(
+                title: "已更新豁免白名单",
+                subtitle: details.joined(separator: " · "),
+                symbolName: "checkmark.circle.fill"
+            )
+        }
+        return outcome
+    }
+
     func syncEnvSecretsToDaemon() {
         guard isDaemonRunning else { return }
         let entries = EnvManager.shared.entries

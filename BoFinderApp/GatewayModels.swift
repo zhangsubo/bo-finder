@@ -148,6 +148,103 @@ struct GatewayAllowlistEntry: Codable, Equatable, Identifiable {
     }
 }
 
+enum GatewayAllowlistBatchParser {
+    private static let fingerprintRegex = try! NSRegularExpression(
+        pattern: #"^sha256:[0-9a-fA-F]{8,64}$"#,
+        options: [.caseInsensitive]
+    )
+
+    static func isFingerprintValue(_ raw: String) -> Bool {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        let range = NSRange(trimmed.startIndex..<trimmed.endIndex, in: trimmed)
+        return fingerprintRegex.firstMatch(in: trimmed, options: [], range: range) != nil
+    }
+
+    static func parseLines(_ rawText: String) -> [(kind: String, value: String, note: String)] {
+        var results: [(kind: String, value: String, note: String)] = []
+        var seen = Set<String>()
+
+        for rawLine in rawText.components(separatedBy: .newlines) {
+            let trimmed = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty || trimmed.hasPrefix("#") || trimmed.hasPrefix("//") {
+                continue
+            }
+
+            var valuePart = trimmed
+            var customNote = ""
+            if let hashRange = trimmed.range(of: " #") {
+                valuePart = String(trimmed[..<hashRange.lowerBound]).trimmingCharacters(in: .whitespaces)
+                customNote = String(trimmed[hashRange.upperBound...]).trimmingCharacters(in: .whitespaces)
+            } else if let slashRange = trimmed.range(of: " //") {
+                valuePart = String(trimmed[..<slashRange.lowerBound]).trimmingCharacters(in: .whitespaces)
+                customNote = String(trimmed[slashRange.upperBound...]).trimmingCharacters(in: .whitespaces)
+            }
+
+            guard !valuePart.isEmpty else { continue }
+
+            let kind: String
+            let normalizedValue: String
+            let note: String
+            if isFingerprintValue(valuePart) {
+                kind = "fingerprint"
+                normalizedValue = valuePart.lowercased()
+                note = customNote.isEmpty ? "指纹豁免" : customNote
+            } else {
+                kind = "path"
+                normalizedValue = valuePart
+                note = customNote.isEmpty ? "测试路径豁免" : customNote
+            }
+
+            let dedupeKey = "\(kind):\(normalizedValue)"
+            guard !seen.contains(dedupeKey) else { continue }
+            seen.insert(dedupeKey)
+            results.append((kind: kind, value: normalizedValue, note: note))
+        }
+
+        return results
+    }
+
+    @discardableResult
+    static func mergeIntoAllowlist(
+        _ existing: inout [GatewayAllowlistEntry],
+        rawText: String,
+        now: Date = Date()
+    ) -> (added: Int, repaired: Int, skippedDuplicates: Int) {
+        var repaired = 0
+        for idx in existing.indices {
+            if existing[idx].kind == "path" && isFingerprintValue(existing[idx].value) {
+                existing[idx].kind = "fingerprint"
+                existing[idx].value = existing[idx].value.lowercased()
+                if existing[idx].note.isEmpty || existing[idx].note == "测试路径豁免" {
+                    existing[idx].note = "指纹豁免"
+                }
+                repaired += 1
+            }
+        }
+
+        let parsed = parseLines(rawText)
+        var added = 0
+        var skipped = 0
+        for item in parsed {
+            if existing.contains(where: { $0.kind == item.kind && $0.value == item.value }) {
+                skipped += 1
+                continue
+            }
+            existing.append(
+                GatewayAllowlistEntry(
+                    kind: item.kind,
+                    value: item.value,
+                    note: item.note,
+                    createdAt: now
+                )
+            )
+            added += 1
+        }
+        return (added: added, repaired: repaired, skippedDuplicates: skipped)
+    }
+}
+
 struct GatewayConfig: Codable, Equatable {
     var listenAddr: String = "127.0.0.1:19840"
     var defaultLLMAction: String = "mask" // "mask" | "block"

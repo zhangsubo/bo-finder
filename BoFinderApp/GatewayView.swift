@@ -637,25 +637,87 @@ struct GatewayView: View {
 
             // Allowlist
             VStack(alignment: .leading, spacing: 10) {
-                Text("豁免白名单（指纹与测试目录路径）")
-                    .font(.headline)
+                let pendingItems = GatewayAllowlistBatchParser.parseLines(newAllowPathInput)
+                let misclassifiedCount = manager.config.allowlist.filter {
+                    $0.kind == "path" && GatewayAllowlistBatchParser.isFingerprintValue($0.value)
+                }.count
+
+                HStack {
+                    Text("豁免白名单（指纹与测试目录路径 · 支持每行一条批量添加）")
+                        .font(.headline)
+                    Spacer()
+                    if misclassifiedCount > 0 {
+                        Button("修正 \(misclassifiedCount) 条指纹类型") {
+                            _ = manager.addAllowlistBatch(rawText: "")
+                        }
+                        .controlSize(.small)
+                    }
+                }
+
+                ZStack(alignment: .topLeading) {
+                    TextEditor(text: $newAllowPathInput)
+                        .font(.system(.caption, design: .monospaced))
+                        .frame(minHeight: 88, maxHeight: 132)
+                        .padding(4)
+                        .background(Color(nsColor: .textBackgroundColor))
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(Color.secondary.opacity(0.28), lineWidth: 1)
+                        )
+
+                    if newAllowPathInput.isEmpty {
+                        Text("每行一条，支持批量粘贴：\nsha256:xxxxxxxxxxxx（自动识别为指纹豁免，可附 # 备注）\nTests/fixtures/（自动识别为测试路径豁免）")
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundColor(.secondary.opacity(0.75))
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 12)
+                            .allowsHitTesting(false)
+                    }
+                }
 
                 HStack(spacing: 8) {
-                    TextField("输入允许放行的相对路径前缀或文件名（如 Tests/fixtures/）", text: $newAllowPathInput)
-                        .textFieldStyle(.roundedBorder)
-                    Button("添加路径豁免") {
-                        let val = newAllowPathInput.trimmingCharacters(in: .whitespacesAndNewlines)
-                        guard !val.isEmpty else { return }
-                        manager.updateConfig { cfg in
-                            cfg.allowlist.append(GatewayAllowlistEntry(kind: "path", value: val, note: "测试路径豁免"))
+                    Button {
+                        if let clip = NSPasteboard.general.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                           !clip.isEmpty {
+                            if newAllowPathInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                newAllowPathInput = clip
+                            } else {
+                                newAllowPathInput = newAllowPathInput.trimmingCharacters(in: .newlines) + "\n" + clip
+                            }
                         }
+                    } label: {
+                        Label("粘贴剪贴板", systemImage: "arrow.up.doc.on.clipboard")
+                    }
+                    .controlSize(.small)
+
+                    if !newAllowPathInput.isEmpty {
+                        Button("清空输入") {
+                            newAllowPathInput = ""
+                        }
+                        .controlSize(.small)
+                    }
+
+                    if !pendingItems.isEmpty {
+                        let fpCnt = pendingItems.filter { $0.kind == "fingerprint" }.count
+                        let pathCnt = pendingItems.count - fpCnt
+                        Text("已解析 \(pendingItems.count) 条（指纹 \(fpCnt) / 路径 \(pathCnt)）")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+
+                    Spacer()
+
+                    Button(pendingItems.isEmpty ? "批量添加豁免" : "批量添加豁免 (\(pendingItems.count) 条)") {
+                        _ = manager.addAllowlistBatch(rawText: newAllowPathInput)
                         newAllowPathInput = ""
                     }
-                    .disabled(newAllowPathInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(pendingItems.isEmpty && misclassifiedCount == 0)
                 }
 
                 if manager.config.allowlist.isEmpty {
-                    Text("暂无白名单豁免项。可在「拦截与脱敏记录」中将误报假密钥一键加入 SHA-256 指纹白名单。")
+                    Text("暂无白名单豁免项。支持在上方每行粘贴一条 sha256:... 指纹或路径批量添加，也可在「拦截与脱敏记录」中一键放行。")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 } else {
@@ -665,10 +727,14 @@ struct GatewayView: View {
                                 .font(.caption2.weight(.semibold))
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
-                                .background(Color.secondary.opacity(0.15))
+                                .background(
+                                    (entry.kind == "fingerprint" ? Color.accentColor : Color.secondary)
+                                        .opacity(0.15)
+                                )
                                 .clipShape(Capsule())
                             Text(entry.value)
                                 .font(.system(.caption, design: .monospaced))
+                                .textSelection(.enabled)
                             if !entry.note.isEmpty {
                                 Text("· \(entry.note)")
                                     .font(.caption)

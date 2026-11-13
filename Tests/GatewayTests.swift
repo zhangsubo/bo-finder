@@ -122,6 +122,28 @@ struct GatewayTests {
             check(NSImage(systemSymbolName: sym, accessibilityDescription: nil) != nil, "SF Symbol '\(sym)' available")
         }
 
+        // 6. Batch allowlist parser (one item per line, auto-classifies sha256:... vs path, deduplicates & repairs legacy path-tagged sha256)
+        var existingAllowlist: [GatewayAllowlistEntry] = [
+            GatewayAllowlistEntry(kind: "path", value: "SHA256:111122223333", note: "测试路径豁免")
+        ]
+        let batchInput = """
+        # comment line to ignore
+
+        sha256:111122223333
+        sha256:AABBCCDDEEFF # custom field label
+        sha256:aabbccddeeff
+        Tests/Fixtures/
+        Sources/Config.swift // config mapping
+        """
+        let mergeOutcome = GatewayAllowlistBatchParser.mergeIntoAllowlist(&existingAllowlist, rawText: batchInput)
+        check(mergeOutcome.repaired == 1, "Repairs existing sha256 entry previously saved with kind=path")
+        check(mergeOutcome.added == 3, "Adds unique fingerprint and path entries across lines")
+        check(mergeOutcome.skippedDuplicates == 1, "Skips entry already present after repair")
+        check(existingAllowlist[0].kind == "fingerprint" && existingAllowlist[0].value == "sha256:111122223333", "Repaired entry normalized to lowercase fingerprint")
+        check(existingAllowlist[1].kind == "fingerprint" && existingAllowlist[1].value == "sha256:aabbccddeeff" && existingAllowlist[1].note == "custom field label", "Parses inline hash note and normalizes hex case")
+        check(existingAllowlist[2].kind == "path" && existingAllowlist[2].value == "Tests/Fixtures/", "Classifies non-sha256 lines as path entries")
+        check(existingAllowlist[3].kind == "path" && existingAllowlist[3].note == "config mapping", "Parses inline double-slash note for path entry")
+
         print("Gateway tests: \(checks) passed")
     }
 }
