@@ -116,7 +116,9 @@ struct GatewayTests {
             "network.badge.shield.half.filled", "lock.shield.fill", "shield.slash",
             "stethoscope", "waveform.path.ecg", "eye.trianglebadge.exclamationmark",
             "hand.raised.fill", "hand.raised.circle.fill", "exclamationmark.shield.fill",
-            "sparkles.rectangle.stack.fill", "arrow.up.doc.on.clipboard"
+            "sparkles.rectangle.stack.fill", "arrow.up.doc.on.clipboard",
+            "doc.badge.gearshape.fill", "doc.on.doc.fill", "clock.badge.exclamationmark",
+            "exclamationmark.triangle.fill"
         ]
         for sym in symbols {
             check(NSImage(systemSymbolName: sym, accessibilityDescription: nil) != nil, "SF Symbol '\(sym)' available")
@@ -143,6 +145,81 @@ struct GatewayTests {
         check(existingAllowlist[1].kind == "fingerprint" && existingAllowlist[1].value == "sha256:aabbccddeeff" && existingAllowlist[1].note == "custom field label", "Parses inline hash note and normalizes hex case")
         check(existingAllowlist[2].kind == "path" && existingAllowlist[2].value == "Tests/Fixtures/", "Classifies non-sha256 lines as path entries")
         check(existingAllowlist[3].kind == "path" && existingAllowlist[3].note == "config mapping", "Parses inline double-slash note for path entry")
+
+        // 7. Backwards-compatible GatewayLocalPreferences decoding when autoSyncAgentRulesMD is absent
+        let legacyPrefsJSON = Data(#"{"isEnabled":true,"selectedTier":"surge","hasCompletedOnboarding":true}"#.utf8)
+        let decodedLegacyPrefs = try? JSONDecoder().decode(GatewayLocalPreferences.self, from: legacyPrefsJSON)
+        check(decodedLegacyPrefs?.isEnabled == true && decodedLegacyPrefs?.autoSyncAgentRulesMD == true, "Legacy preferences.json preserves fields and defaults autoSyncAgentRulesMD to true")
+
+        // 8. Global CLAUDE.md / AGENTS.md append-only syncer (never creates missing files, deduplicates symlinks, idempotent)
+        let fm = FileManager.default
+        let tempHome = fm.temporaryDirectory.appendingPathComponent("deskside-agent-rules-test-\(UUID().uuidString)", isDirectory: true)
+        try! fm.createDirectory(at: tempHome, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: tempHome) }
+
+        // 8a. Neither CLAUDE.md nor AGENTS.md exists -> must NOT create any file and must report foundAnyGlobalFile == false
+        let emptyOutcome = GatewayAgentRulesSyncer.syncExistingFiles(homeDirectory: tempHome.path, fileManager: fm)
+        check(!emptyOutcome.foundAnyGlobalFile && emptyOutcome.targets.isEmpty, "Reports missing when neither CLAUDE.md nor AGENTS.md exists")
+        check(!fm.fileExists(atPath: tempHome.appendingPathComponent("CLAUDE.md").path), "Never auto-creates ~/CLAUDE.md")
+        check(!fm.fileExists(atPath: tempHome.appendingPathComponent("AGENTS.md").path), "Never auto-creates ~/AGENTS.md")
+        check(!fm.fileExists(atPath: tempHome.appendingPathComponent(".claude/CLAUDE.md").path), "Never auto-creates ~/.claude/CLAUDE.md")
+        check(!fm.fileExists(atPath: tempHome.appendingPathComponent(".codex/AGENTS.md").path), "Never auto-creates ~/.codex/AGENTS.md")
+
+        // 8b. Only lowercase ~/.claude/claude.md exists -> appends ONLY to it without creating AGENTS.md
+        let claudeDir = tempHome.appendingPathComponent(".claude", isDirectory: true)
+        try! fm.createDirectory(at: claudeDir, withIntermediateDirectories: true)
+        let lowerClaudeFile = claudeDir.appendingPathComponent("claude.md")
+        try! Data("# User Claude Rules\nKeep code concise.".utf8).write(to: lowerClaudeFile)
+
+        let singleOutcome = GatewayAgentRulesSyncer.syncExistingFiles(homeDirectory: tempHome.path, fileManager: fm)
+        check(singleOutcome.foundAnyGlobalFile && singleOutcome.targets.count == 1, "Detects lowercase ~/.claude/claude.md")
+        check(singleOutcome.newlySyncedPaths == ["~/.claude/claude.md"], "Appends to existing ~/.claude/claude.md")
+        check(!fm.fileExists(atPath: claudeDir.appendingPathComponent("AGENTS.md").path), "Does not create sibling AGENTS.md when only claude.md exists")
+        let updatedLowerClaude = try! String(contentsOf: lowerClaudeFile, encoding: .utf8)
+        check(updatedLowerClaude.hasPrefix("# User Claude Rules\nKeep code concise.\n\n") && updatedLowerClaude.contains("提交代码前主动暂停，提示用户先将其加入白名单"), "Preserves existing header and appends allowlist pre-commit instruction")
+
+        // 8c. Symlinked hub (~/.agent-rules/AGENTS.md + ~/.codex/AGENTS.md symlink + ~/.config/opencode/AGENTS.md symlink)
+        try! fm.removeItem(at: claudeDir)
+        let rulesDir = tempHome.appendingPathComponent(".agent-rules", isDirectory: true)
+        let codexDir = tempHome.appendingPathComponent(".codex", isDirectory: true)
+        let openCodeDir = tempHome.appendingPathComponent(".config/opencode", isDirectory: true)
+        try! fm.createDirectory(at: rulesDir, withIntermediateDirectories: true)
+        try! fm.createDirectory(at: codexDir, withIntermediateDirectories: true)
+        try! fm.createDirectory(at: openCodeDir, withIntermediateDirectories: true)
+
+        let hubAgents = rulesDir.appendingPathComponent("AGENTS.md")
+        let hubClaude = rulesDir.appendingPathComponent("CLAUDE.md")
+        try! Data("# Global Agents\n".utf8).write(to: hubAgents)
+        try! Data("@~/.agent-rules/AGENTS.md\n\n## Claude Code Adapter\n".utf8).write(to: hubClaude)
+
+        let codexLink = codexDir.appendingPathComponent("AGENTS.md")
+        let openCodeLink = openCodeDir.appendingPathComponent("AGENTS.md")
+        try! fm.createSymbolicLink(atPath: codexLink.path, withDestinationPath: hubAgents.path)
+        try! fm.createSymbolicLink(atPath: openCodeLink.path, withDestinationPath: hubAgents.path)
+
+        let hubOutcome1 = GatewayAgentRulesSyncer.syncExistingFiles(homeDirectory: tempHome.path, fileManager: fm)
+        check(hubOutcome1.targets.count == 2 && hubOutcome1.newlySyncedPaths.count == 2, "Deduplicates symlinks onto 2 canonical global files")
+        let agentsTarget = hubOutcome1.targets.first { $0.kind == .agents }
+        check(agentsTarget?.displayPath == "~/.agent-rules/AGENTS.md" && agentsTarget?.linkedDisplayPaths.count == 2, "Tracks symlink aliases under canonical ~/.agent-rules/AGENTS.md")
+        check((try? fm.destinationOfSymbolicLink(atPath: codexLink.path)) == hubAgents.path, "Preserves ~/.codex/AGENTS.md as a symbolic link")
+
+        // 8d. Second sync is strictly idempotent (zero duplicate blocks)
+        let hubOutcome2 = GatewayAgentRulesSyncer.syncExistingFiles(homeDirectory: tempHome.path, fileManager: fm)
+        check(hubOutcome2.newlySyncedPaths.isEmpty && hubOutcome2.alreadySyncedPaths.count == 2, "Second sync is idempotent with zero redundant writes")
+        let hubAgentsContent = try! String(contentsOf: hubAgents, encoding: .utf8)
+        let markerOccurrences = hubAgentsContent.components(separatedBy: GatewayAgentRulesSyncer.startMarker).count - 1
+        check(markerOccurrences == 1, "Managed marker appears exactly once after repeated syncs")
+
+        // 8e. Outdated block between markers upgrades cleanly, and removal restores user content
+        let staleContent = "# Global Agents\n\n\(GatewayAgentRulesSyncer.startMarker)\noutdated text\n\(GatewayAgentRulesSyncer.endMarker)\n"
+        try! Data(staleContent.utf8).write(to: hubAgents)
+        let upgradeOutcome = GatewayAgentRulesSyncer.syncExistingFiles(homeDirectory: tempHome.path, fileManager: fm)
+        check(upgradeOutcome.newlySyncedPaths == ["~/.agent-rules/AGENTS.md"], "Upgrades outdated managed block in-place")
+
+        let removedCount = GatewayAgentRulesSyncer.removeFromExistingFiles(homeDirectory: tempHome.path, fileManager: fm)
+        check(removedCount == 2, "Removes managed block from both canonical global files")
+        let restoredClaude = try! String(contentsOf: hubClaude, encoding: .utf8)
+        check(restoredClaude == "@~/.agent-rules/AGENTS.md\n\n## Claude Code Adapter\n", "Removal preserves original @import and user content verbatim")
 
         print("Gateway tests: \(checks) passed")
     }

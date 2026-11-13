@@ -59,11 +59,18 @@ struct GatewayView: View {
             upstreamProxyDraft = manager.config.upstreamProxyURL
             manager.refreshDashboard()
         }
-        .sheet(isPresented: $manager.showMitmproxyConsentSheet) {
+        .sheet(isPresented: $manager.showMitmproxyConsentSheet, onDismiss: {
+            manager.presentDeferredAgentRulesSheetIfNeeded()
+        }) {
             MitmproxyConsentSheet(manager: manager)
         }
-        .sheet(isPresented: $manager.showSurgeGuideSheet) {
+        .sheet(isPresented: $manager.showSurgeGuideSheet, onDismiss: {
+            manager.presentDeferredAgentRulesSheetIfNeeded()
+        }) {
             SurgeModuleGuideSheet(manager: manager)
+        }
+        .sheet(isPresented: $manager.showAgentRulesManualSheet) {
+            AgentRulesManualWriteSheet(manager: manager)
         }
         .sheet(isPresented: $showAddCustomRuleSheet) {
             AddCustomPatternSheet { pattern in
@@ -360,6 +367,11 @@ struct GatewayView: View {
                         .font(.callout)
                     }
                     .padding(.top, 2)
+
+                    Divider()
+                        .padding(.vertical, 4)
+
+                    agentRulesSyncRow
                 }
                 Spacer()
             }
@@ -367,6 +379,87 @@ struct GatewayView: View {
         .padding(16)
         .background(Color(nsColor: .controlBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var agentRulesSyncRow: some View {
+        let targets = manager.agentRuleTargets
+        let syncedCount = targets.filter(\.isSynced).count
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                Toggle(
+                    "启用时自动向全局 CLAUDE.md / AGENTS.md 追加提交前白名单预检规范（只追加不新建）",
+                    isOn: Binding(
+                        get: { manager.prefs.autoSyncAgentRulesMD },
+                        set: { manager.setAutoSyncAgentRulesMD($0) }
+                    )
+                )
+                .toggleStyle(.checkbox)
+                .font(.callout)
+
+                Spacer()
+
+                Button("查看规范内容") {
+                    manager.openAgentRulesSheet(missingPrompt: targets.isEmpty)
+                }
+                .controlSize(.small)
+
+                if !targets.isEmpty {
+                    Button(syncedCount == targets.count ? "重新同步" : "立即追加") {
+                        manager.syncGlobalAgentInstructionFiles(promptIfMissing: true, showSuccessHUD: true)
+                    }
+                    .controlSize(.small)
+                    .buttonStyle(.borderedProminent)
+
+                    if syncedCount > 0 {
+                        Button("移除区块") {
+                            manager.removeGlobalAgentInstructionBlock()
+                        }
+                        .controlSize(.small)
+                    }
+                }
+            }
+
+            if targets.isEmpty {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.orange)
+                        .font(.caption)
+                    Text("未检测到全局 CLAUDE.md 或 AGENTS.md（遵循「只追加不新建」原则未自动创建文件）。")
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                    Button("手动写入指引…") {
+                        manager.openAgentRulesSheet(missingPrompt: true)
+                    }
+                    .controlSize(.small)
+                }
+            } else {
+                HStack(spacing: 8) {
+                    ForEach(targets) { target in
+                        HStack(spacing: 4) {
+                            Image(systemName: target.isSynced ? "checkmark.circle.fill" : "clock.badge.exclamationmark")
+                                .foregroundColor(target.isSynced ? .green : .orange)
+                                .font(.caption2)
+                            Text(target.displayPath)
+                                .font(.system(.caption2, design: .monospaced))
+                            if !target.linkedDisplayPaths.isEmpty {
+                                Text("+\(target.linkedDisplayPaths.count) 软链")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background((target.isSynced ? Color.green : Color.orange).opacity(0.11))
+                        .clipShape(Capsule())
+                        .help(
+                            target.linkedDisplayPaths.isEmpty
+                                ? target.canonicalPath
+                                : "关联软链：\(target.linkedDisplayPaths.joined(separator: ", "))"
+                        )
+                    }
+                }
+            }
+        }
     }
 
     // MARK: - Tab 1: Audit Events
@@ -1203,5 +1296,95 @@ private struct AddCustomPatternSheet: View {
         }
         .padding(22)
         .frame(width: 460)
+    }
+}
+
+private struct AgentRulesManualWriteSheet: View {
+    @ObservedObject var manager: GatewayManager
+    @State private var copiedFeedback: Bool = false
+
+    var body: some View {
+        let isMissing = manager.agentRulesSheetIsMissingPrompt && manager.agentRuleTargets.isEmpty
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 10) {
+                Image(systemName: isMissing ? "exclamationmark.triangle.fill" : "doc.badge.gearshape.fill")
+                    .font(.system(size: 24))
+                    .foregroundColor(isMissing ? .orange : .accentColor)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(isMissing ? "未检测到全局 CLAUDE.md / AGENTS.md，请手动写入" : "全局 Agent 安全网关协作规范")
+                        .font(.title3.weight(.bold))
+                    Text(
+                        isMissing
+                            ? "已扫描 ~/.claude/、~/.codex/、~/.agent-rules/、~/.config/*/ 与 ~/ 等全局路径，按「只追加、不新建」原则未自动新建文件。"
+                            : "当检测到已有全局 CLAUDE.md 或 AGENTS.md 时，安全网关会在文件末尾幂等追加以下协作规范（软链自动去重）。"
+                    )
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                }
+            }
+
+            if isMissing {
+                Text("请手动创建或打开您常用的全局 Agent 规则文件（例如 `~/.claude/CLAUDE.md` 或 `~/.codex/AGENTS.md`），将下方规范粘贴保存：")
+                    .font(.callout)
+            } else if !manager.agentRuleTargets.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("当前已检测到的全局规则文件：")
+                        .font(.caption.weight(.semibold))
+                        .foregroundColor(.secondary)
+                    ForEach(manager.agentRuleTargets) { target in
+                        HStack(spacing: 6) {
+                            Image(systemName: target.isSynced ? "checkmark.circle.fill" : "clock.badge.exclamationmark")
+                                .foregroundColor(target.isSynced ? .green : .orange)
+                                .font(.caption)
+                            Text(target.displayPath)
+                                .font(.system(.caption, design: .monospaced))
+                            if !target.linkedDisplayPaths.isEmpty {
+                                Text("（软链覆盖：\(target.linkedDisplayPaths.joined(separator: ", "))）")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
+
+            ScrollView {
+                Text(GatewayAgentRulesSyncer.renderManagedBlock())
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+            }
+            .frame(height: 220)
+            .background(Color(nsColor: .controlBackgroundColor))
+            .cornerRadius(8)
+
+            HStack(spacing: 10) {
+                Button("关闭") {
+                    manager.showAgentRulesManualSheet = false
+                }
+
+                Button("我已创建文件，重新检测并追加") {
+                    let outcome = manager.syncGlobalAgentInstructionFiles(promptIfMissing: false, showSuccessHUD: true)
+                    if outcome.foundAnyGlobalFile {
+                        manager.agentRulesSheetIsMissingPrompt = false
+                    }
+                }
+
+                Spacer()
+
+                Button(copiedFeedback ? "已复制到剪贴板 ✓" : "一键复制写入内容") {
+                    manager.copyAgentRulesMarkdownToClipboard()
+                    copiedFeedback = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
+                        copiedFeedback = false
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .padding(.top, 4)
+        }
+        .padding(24)
+        .frame(width: 620)
     }
 }

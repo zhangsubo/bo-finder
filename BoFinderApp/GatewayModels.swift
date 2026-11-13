@@ -86,11 +86,67 @@ struct GatewayLocalPreferences: Codable, Equatable {
     var hasCompletedOnboarding: Bool = false
     var gitGuardEnabled: Bool = true
     var agentSelfProtectEnabled: Bool = false
+    var autoSyncAgentRulesMD: Bool = true
     var showHUDNotifications: Bool = true
     var previousGitHooksPath: String? = nil
     var didOverrideGitHooksPath: Bool = false
     var savedProxySnapshots: [GatewayNetworkServiceProxySnapshot] = []
     var mitmproxyBinaryPath: String? = nil
+
+    enum CodingKeys: String, CodingKey {
+        case isEnabled
+        case selectedTier
+        case hasCompletedOnboarding
+        case gitGuardEnabled
+        case agentSelfProtectEnabled
+        case autoSyncAgentRulesMD
+        case showHUDNotifications
+        case previousGitHooksPath
+        case didOverrideGitHooksPath
+        case savedProxySnapshots
+        case mitmproxyBinaryPath
+    }
+
+    init(
+        isEnabled: Bool = false,
+        selectedTier: GatewayCaptureTier = .surge,
+        hasCompletedOnboarding: Bool = false,
+        gitGuardEnabled: Bool = true,
+        agentSelfProtectEnabled: Bool = false,
+        autoSyncAgentRulesMD: Bool = true,
+        showHUDNotifications: Bool = true,
+        previousGitHooksPath: String? = nil,
+        didOverrideGitHooksPath: Bool = false,
+        savedProxySnapshots: [GatewayNetworkServiceProxySnapshot] = [],
+        mitmproxyBinaryPath: String? = nil
+    ) {
+        self.isEnabled = isEnabled
+        self.selectedTier = selectedTier
+        self.hasCompletedOnboarding = hasCompletedOnboarding
+        self.gitGuardEnabled = gitGuardEnabled
+        self.agentSelfProtectEnabled = agentSelfProtectEnabled
+        self.autoSyncAgentRulesMD = autoSyncAgentRulesMD
+        self.showHUDNotifications = showHUDNotifications
+        self.previousGitHooksPath = previousGitHooksPath
+        self.didOverrideGitHooksPath = didOverrideGitHooksPath
+        self.savedProxySnapshots = savedProxySnapshots
+        self.mitmproxyBinaryPath = mitmproxyBinaryPath
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.isEnabled = try c.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? false
+        self.selectedTier = try c.decodeIfPresent(GatewayCaptureTier.self, forKey: .selectedTier) ?? .surge
+        self.hasCompletedOnboarding = try c.decodeIfPresent(Bool.self, forKey: .hasCompletedOnboarding) ?? false
+        self.gitGuardEnabled = try c.decodeIfPresent(Bool.self, forKey: .gitGuardEnabled) ?? true
+        self.agentSelfProtectEnabled = try c.decodeIfPresent(Bool.self, forKey: .agentSelfProtectEnabled) ?? false
+        self.autoSyncAgentRulesMD = try c.decodeIfPresent(Bool.self, forKey: .autoSyncAgentRulesMD) ?? true
+        self.showHUDNotifications = try c.decodeIfPresent(Bool.self, forKey: .showHUDNotifications) ?? true
+        self.previousGitHooksPath = try c.decodeIfPresent(String.self, forKey: .previousGitHooksPath)
+        self.didOverrideGitHooksPath = try c.decodeIfPresent(Bool.self, forKey: .didOverrideGitHooksPath) ?? false
+        self.savedProxySnapshots = try c.decodeIfPresent([GatewayNetworkServiceProxySnapshot].self, forKey: .savedProxySnapshots) ?? []
+        self.mitmproxyBinaryPath = try c.decodeIfPresent(String.self, forKey: .mitmproxyBinaryPath)
+    }
 }
 
 // MARK: - GuardEngine JSON Wire Models
@@ -532,5 +588,364 @@ enum GatewayGitHookRenderer {
         fi
         exit 0
         """ + "\n"
+    }
+}
+
+// MARK: - Global CLAUDE.md / AGENTS.md Append-Only Syncer
+
+struct GatewayAgentRuleFileTarget: Equatable, Identifiable {
+    enum Kind: String, Equatable {
+        case claude = "claude"
+        case agents = "agents"
+    }
+
+    var id: String { canonicalPath }
+    var kind: Kind
+    var canonicalPath: String
+    var displayPath: String
+    var linkedDisplayPaths: [String]
+    var isSynced: Bool
+}
+
+struct GatewayAgentRulesSyncOutcome: Equatable {
+    var targets: [GatewayAgentRuleFileTarget]
+    var newlySyncedPaths: [String]
+    var alreadySyncedPaths: [String]
+    var failedPaths: [String]
+
+    var foundAnyGlobalFile: Bool { !targets.isEmpty }
+}
+
+enum GatewayAgentRulesSyncer {
+    static let startMarker = "<!-- >>> DeskSide Security Gateway >>> -->"
+    static let endMarker = "<!-- <<< DeskSide Security Gateway <<< -->"
+
+    private static let globalDotDirs: [String] = [
+        ".agent-rules",
+        ".claude",
+        ".codex",
+        ".gemini",
+        ".kimi",
+        ".cursor",
+        ".windsurf",
+        ".factory",
+        ".amp",
+        ".goose",
+        ".continue",
+        ".aider"
+    ]
+
+    private static let topLevelCandidateNames: [String] = [
+        "CLAUDE.md", "claude.md",
+        "AGENTS.md", "agents.md",
+        "AGENT.md", "agent.md"
+    ]
+
+    private static let skippedConfigSubdirs: Set<String> = [
+        "deskside-guard", "git", "gh", "gcloud", "configstore"
+    ]
+
+    static func renderManagedBlock() -> String {
+        return """
+        \(startMarker)
+        ## DeskSide 安全网关协作规范
+
+        本机已启用 **DeskSide 安全网关**（全局 Git `pre-commit` / `pre-push` 密钥防泄漏拦截与双出口守护），编写与提交代码时请严格遵守：
+
+        1. **提交前白名单预检与主动提示**：当新增或修改的代码、单测 Fixture、文档示例、敏感语义字段或枚举值（如含 `Secret` / `Token` / `Password` / `Key` 字样的常量赋值、假密钥样例、示例数据库 URI 等）可能触发安全网关拦截且确需豁免时，**必须在执行 `git commit` / `git push` 提交代码前主动暂停，提示用户先将其加入白名单**，待用户确认后再执行提交。
+        2. **提供可直接粘贴的豁免项**：提示用户加白名单时，请一并列出待豁免的**相对文件路径**（如 `Tests/Fixtures/`）或扫描输出的 **`sha256:...` 指纹**（每行一条，引导用户粘贴至 `DeskSide -> 安全网关 -> 策略与规则 -> 白名单豁免` 批量添加；若本机存在 `/Applications/DeskSide.app/Contents/MacOS/deskside-guard`，可先执行 `deskside-guard scan <文件路径>` 预检获取指纹）。
+        3. **严禁绕过安全网关**：禁止使用 `git commit --no-verify`（`-n`）、`git push --no-verify`、篡改 `core.hooksPath` 或拆分硬编码真实密钥来规避检查；真实凭据一律迁移至环境变量读取。
+        \(endMarker)
+        """
+    }
+
+    static func classifyFileName(_ fileName: String) -> GatewayAgentRuleFileTarget.Kind? {
+        switch fileName.lowercased() {
+        case "claude.md":
+            return .claude
+        case "agent.md", "agents.md":
+            return .agents
+        default:
+            return nil
+        }
+    }
+
+    static func containsCurrentManagedBlock(_ content: String) -> Bool {
+        let block = renderManagedBlock()
+        return content.contains(block)
+    }
+
+    static func applyManagedBlock(to originalContent: String) -> (updated: String, changed: Bool) {
+        let block = renderManagedBlock()
+        if let startRange = originalContent.range(of: startMarker),
+           let endRange = originalContent.range(of: endMarker),
+           startRange.lowerBound < endRange.upperBound {
+            var updated = originalContent
+            updated.replaceSubrange(startRange.lowerBound..<endRange.upperBound, with: block)
+            return (updated, updated != originalContent)
+        }
+
+        if originalContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let updated = block + "\n"
+            return (updated, updated != originalContent)
+        }
+
+        let updated: String
+        if originalContent.hasSuffix("\n\n") {
+            updated = originalContent + block + "\n"
+        } else if originalContent.hasSuffix("\n") {
+            updated = originalContent + "\n" + block + "\n"
+        } else {
+            updated = originalContent + "\n\n" + block + "\n"
+        }
+        return (updated, true)
+    }
+
+    static func removeManagedBlock(from originalContent: String) -> (updated: String, changed: Bool) {
+        guard let startRange = originalContent.range(of: startMarker),
+              let endRange = originalContent.range(of: endMarker),
+              startRange.lowerBound < endRange.upperBound else {
+            return (originalContent, false)
+        }
+
+        var lower = startRange.lowerBound
+        while lower > originalContent.startIndex {
+            let prev = originalContent.index(before: lower)
+            if originalContent[prev] == "\n" || originalContent[prev] == "\r" {
+                lower = prev
+            } else {
+                break
+            }
+        }
+
+        var upper = endRange.upperBound
+        while upper < originalContent.endIndex && (originalContent[upper] == "\n" || originalContent[upper] == "\r") {
+            upper = originalContent.index(after: upper)
+        }
+
+        var updated = originalContent
+        let replacement: String
+        if lower == originalContent.startIndex {
+            replacement = ""
+        } else if upper == originalContent.endIndex {
+            replacement = "\n"
+        } else {
+            replacement = "\n\n"
+        }
+        updated.replaceSubrange(lower..<upper, with: replacement)
+        return (updated, updated != originalContent)
+    }
+
+    static func shortenHomePath(_ path: String, homeDirectory: String) -> String {
+        let cleanHome = URL(fileURLWithPath: homeDirectory).standardizedFileURL.path
+        if path == cleanHome { return "~" }
+        if path.hasPrefix(cleanHome + "/") {
+            return "~" + String(path.dropFirst(cleanHome.count))
+        }
+        return path
+    }
+
+    /// Discovers existing global `CLAUDE.md` and `AGENTS.md` (`agent.md`) files without touching TCC-protected user folders
+    /// and without creating any files. Deduplicates symlinked paths onto their canonical target file.
+    static func discoverTargets(
+        homeDirectory: String,
+        fileManager: FileManager = .default
+    ) -> [GatewayAgentRuleFileTarget] {
+        let homeURL = URL(fileURLWithPath: homeDirectory, isDirectory: true).standardizedFileURL
+        let resolvedHomePath = homeURL.resolvingSymlinksInPath().standardizedFileURL.path
+        var rawCandidates: [(url: URL, kind: GatewayAgentRuleFileTarget.Kind)] = []
+
+        func scanShallowDirectory(_ dirURL: URL) {
+            var isDir: ObjCBool = false
+            guard fileManager.fileExists(atPath: dirURL.path, isDirectory: &isDir), isDir.boolValue else { return }
+            guard let items = try? fileManager.contentsOfDirectory(atPath: dirURL.path) else { return }
+            for item in items.sorted() {
+                if let kind = classifyFileName(item) {
+                    rawCandidates.append((dirURL.appendingPathComponent(item), kind))
+                }
+            }
+        }
+
+        // 1. Standard global AI agent dot-directories under ~/
+        for dotDir in globalDotDirs {
+            scanShallowDirectory(homeURL.appendingPathComponent(dotDir, isDirectory: true))
+        }
+
+        // 2. ~/.config and 1-level ~/.config/<tool>/
+        let dotConfigURL = homeURL.appendingPathComponent(".config", isDirectory: true)
+        var configIsDir: ObjCBool = false
+        if fileManager.fileExists(atPath: dotConfigURL.path, isDirectory: &configIsDir), configIsDir.boolValue {
+            scanShallowDirectory(dotConfigURL)
+            if let subdirs = try? fileManager.contentsOfDirectory(atPath: dotConfigURL.path) {
+                for sub in subdirs.sorted() where !sub.hasPrefix(".") && !skippedConfigSubdirs.contains(sub.lowercased()) {
+                    scanShallowDirectory(dotConfigURL.appendingPathComponent(sub, isDirectory: true))
+                }
+            }
+        }
+
+        // 3. Direct top-level ~/CLAUDE.md, ~/AGENTS.md, ~/AGENT.md (exact check, no directory listing on $HOME)
+        var seenTopCaseInsensitive = Set<String>()
+        for name in topLevelCandidateNames {
+            let candidateURL = homeURL.appendingPathComponent(name)
+            var isDir: ObjCBool = false
+            if fileManager.fileExists(atPath: candidateURL.path, isDirectory: &isDir), !isDir.boolValue {
+                let canonical = candidateURL.resolvingSymlinksInPath().standardizedFileURL.path
+                if seenTopCaseInsensitive.insert(canonical).inserted, let kind = classifyFileName(name) {
+                    rawCandidates.append((candidateURL, kind))
+                }
+            }
+        }
+
+        // Group by canonical target file path so symlink aliases never cause duplicate writes.
+        struct Bucket {
+            var kind: GatewayAgentRuleFileTarget.Kind
+            var canonicalPath: String
+            var discoveredDisplayPaths: [String]
+        }
+
+        var orderedCanonicalKeys: [String] = []
+        var buckets: [String: Bucket] = [:]
+
+        for (candidateURL, kind) in rawCandidates {
+            let canonicalURL = candidateURL.resolvingSymlinksInPath().standardizedFileURL
+            var isDir: ObjCBool = false
+            guard fileManager.fileExists(atPath: canonicalURL.path, isDirectory: &isDir), !isDir.boolValue else {
+                continue
+            }
+
+            let disp = shortenHomePath(candidateURL.standardizedFileURL.path, homeDirectory: homeURL.path)
+            let canonicalDisp = shortenHomePath(canonicalURL.path, homeDirectory: resolvedHomePath)
+            let key = canonicalURL.path
+
+            if var existing = buckets[key] {
+                if !existing.discoveredDisplayPaths.contains(disp) {
+                    existing.discoveredDisplayPaths.append(disp)
+                }
+                // If canonical file itself is named claude.md or agents.md, prefer canonical's kind
+                if let canonicalKind = classifyFileName(canonicalURL.lastPathComponent) {
+                    existing.kind = canonicalKind
+                }
+                buckets[key] = existing
+            } else {
+                orderedCanonicalKeys.append(key)
+                let resolvedKind = classifyFileName(canonicalURL.lastPathComponent) ?? kind
+                var displays = [disp]
+                if canonicalDisp != disp && !displays.contains(canonicalDisp) {
+                    displays.insert(canonicalDisp, at: 0)
+                }
+                buckets[key] = Bucket(
+                    kind: resolvedKind,
+                    canonicalPath: key,
+                    discoveredDisplayPaths: displays
+                )
+            }
+        }
+
+        var targets: [GatewayAgentRuleFileTarget] = []
+        for key in orderedCanonicalKeys {
+            guard let bucket = buckets[key] else { continue }
+            let canonicalShort = shortenHomePath(bucket.canonicalPath, homeDirectory: resolvedHomePath)
+            let primaryDisplay: String
+            if bucket.discoveredDisplayPaths.contains(canonicalShort) {
+                primaryDisplay = canonicalShort
+            } else {
+                primaryDisplay = bucket.discoveredDisplayPaths.first ?? canonicalShort
+            }
+            let aliases = bucket.discoveredDisplayPaths.filter { $0 != primaryDisplay }
+            let content = (try? String(contentsOfFile: bucket.canonicalPath, encoding: .utf8)) ?? ""
+            let synced = containsCurrentManagedBlock(content)
+
+            targets.append(GatewayAgentRuleFileTarget(
+                kind: bucket.kind,
+                canonicalPath: bucket.canonicalPath,
+                displayPath: primaryDisplay,
+                linkedDisplayPaths: aliases,
+                isSynced: synced
+            ))
+        }
+
+        return targets
+    }
+
+    /// Strictly append-only sync: updates ONLY existing global `CLAUDE.md` / `AGENTS.md` files and NEVER creates missing files.
+    @discardableResult
+    static func syncExistingFiles(
+        homeDirectory: String,
+        fileManager: FileManager = .default
+    ) -> GatewayAgentRulesSyncOutcome {
+        let initialTargets = discoverTargets(homeDirectory: homeDirectory, fileManager: fileManager)
+        guard !initialTargets.isEmpty else {
+            return GatewayAgentRulesSyncOutcome(
+                targets: [],
+                newlySyncedPaths: [],
+                alreadySyncedPaths: [],
+                failedPaths: []
+            )
+        }
+
+        var newlySynced: [String] = []
+        var alreadySynced: [String] = []
+        var failed: [String] = []
+
+        for target in initialTargets {
+            var isDir: ObjCBool = false
+            // Enforce strict append-only: never create if file disappeared.
+            guard fileManager.fileExists(atPath: target.canonicalPath, isDirectory: &isDir), !isDir.boolValue else {
+                continue
+            }
+
+            do {
+                let original = try String(contentsOfFile: target.canonicalPath, encoding: .utf8)
+                let (updated, changed) = applyManagedBlock(to: original)
+                if !changed {
+                    alreadySynced.append(target.displayPath)
+                    continue
+                }
+
+                let existingPerms = (try? fileManager.attributesOfItem(atPath: target.canonicalPath)[.posixPermissions]) as? NSNumber
+                try Data(updated.utf8).write(to: URL(fileURLWithPath: target.canonicalPath), options: .atomic)
+                if let perms = existingPerms {
+                    try? fileManager.setAttributes([.posixPermissions: perms.intValue], ofItemAtPath: target.canonicalPath)
+                }
+                newlySynced.append(target.displayPath)
+            } catch {
+                failed.append(target.displayPath)
+            }
+        }
+
+        let refreshed = discoverTargets(homeDirectory: homeDirectory, fileManager: fileManager)
+        return GatewayAgentRulesSyncOutcome(
+            targets: refreshed,
+            newlySyncedPaths: newlySynced,
+            alreadySyncedPaths: alreadySynced,
+            failedPaths: failed
+        )
+    }
+
+    /// Removes the managed DeskSide Security Gateway block from existing global instruction files while preserving all user content.
+    @discardableResult
+    static func removeFromExistingFiles(
+        homeDirectory: String,
+        fileManager: FileManager = .default
+    ) -> Int {
+        let targets = discoverTargets(homeDirectory: homeDirectory, fileManager: fileManager)
+        var removedCount = 0
+        for target in targets {
+            var isDir: ObjCBool = false
+            guard fileManager.fileExists(atPath: target.canonicalPath, isDirectory: &isDir), !isDir.boolValue,
+                  let original = try? String(contentsOfFile: target.canonicalPath, encoding: .utf8) else {
+                continue
+            }
+            let (updated, changed) = removeManagedBlock(from: original)
+            guard changed else { continue }
+            let existingPerms = (try? fileManager.attributesOfItem(atPath: target.canonicalPath)[.posixPermissions]) as? NSNumber
+            if (try? Data(updated.utf8).write(to: URL(fileURLWithPath: target.canonicalPath), options: .atomic)) != nil {
+                if let perms = existingPerms {
+                    try? fileManager.setAttributes([.posixPermissions: perms.intValue], ofItemAtPath: target.canonicalPath)
+                }
+                removedCount += 1
+            }
+        }
+        return removedCount
     }
 }
