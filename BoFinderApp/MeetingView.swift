@@ -19,6 +19,10 @@ struct MeetingView: View {
     @State private var confirmDelete = false
     @State private var titleText = ""
     @State private var editingTitle = false
+    @State private var isMerging = false
+    @State private var mergeSelection: Set<UUID> = []
+    @State private var showMergeSheet = false
+    @State private var mergeTitleDraft = ""
     @FocusState private var transcriptSearchFocused: Bool
 
     var body: some View {
@@ -75,9 +79,48 @@ struct MeetingView: View {
             .padding(24)
             .frame(width: 500)
         }
+        .sheet(isPresented: $showMergeSheet) {
+            mergePreviewSheet
+        }
     }
 
     // MARK: - Meeting Library
+
+    private var mergeableRecords: [MeetingRecord] {
+        manager.records.filter { $0.id != manager.active && !manager.busy.contains($0.id) }
+    }
+
+    private var selectedMergeRecords: [MeetingRecord] {
+        MeetingMerger.sortedRecords(manager.records.filter {
+            mergeSelection.contains($0.id) && $0.id != manager.active && !manager.busy.contains($0.id)
+        })
+    }
+
+    private var mergeOrderMap: [UUID: Int] {
+        Dictionary(uniqueKeysWithValues: selectedMergeRecords.enumerated().map { ($0.element.id, $0.offset + 1) })
+    }
+
+    private func enterMergeMode(preselecting id: UUID? = nil) {
+        isMerging = true
+        if let id {
+            mergeSelection = [id]
+        } else {
+            mergeSelection.removeAll()
+        }
+    }
+
+    private func exitMergeMode() {
+        isMerging = false
+        mergeSelection.removeAll()
+        showMergeSheet = false
+    }
+
+    private func openMergePreview() {
+        let plan = MeetingMerger.plan(records: selectedMergeRecords)
+        guard plan.parts.count >= 2 else { return }
+        mergeTitleDraft = plan.suggestedTitle
+        showMergeSheet = true
+    }
 
     private var filteredRecords: [MeetingRecord] {
         guard !search.trimmingCharacters(in: .whitespaces).isEmpty else { return manager.records }
@@ -100,6 +143,17 @@ struct MeetingView: View {
                 }
                 Spacer()
                 Button {
+                    if isMerging {
+                        exitMergeMode()
+                    } else {
+                        enterMergeMode()
+                    }
+                } label: {
+                    Label(isMerging ? "退出合并" : "合并记录", systemImage: "arrow.triangle.merge")
+                }
+                .disabled(!isMerging && mergeableRecords.count < 2)
+
+                Button {
                     floatingPanel.toggle()
                 } label: {
                     Label(floatingPanel.isVisible ? "隐藏桌边纪要窗" : "打开桌边纪要窗", systemImage: floatingPanel.isVisible ? "eye.slash" : "sidebar.right")
@@ -116,30 +170,58 @@ struct MeetingView: View {
                 .disabled(manager.active != nil || manager.starting || manager.stopping)
             }
 
-            HStack(spacing: 12) {
-                Label(
-                    manager.active == nil
-                        ? (manager.config.automatic ? "自动检测录制已开启" : "本机零依赖录音就绪")
-                        : "正在录音 · \(MeetingRecord.shortClock(manager.elapsed))",
-                    systemImage: manager.active == nil ? "waveform" : "record.circle.fill"
-                )
-                .foregroundColor(manager.active == nil ? .primary : .red)
-
-                Spacer()
-
-                if let id = manager.active {
-                    Button(floatingPanel.isVisible ? "隐藏悬浮窗" : "桌边悬浮窗") { floatingPanel.toggle() }
-                    Button("进入实时详情") {
-                        manager.selected = id
-                        detailTab = 0
+            if isMerging {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Label(
+                            selectedMergeRecords.isEmpty
+                                ? "请勾选需要合并的会议记录（至少 2 条）"
+                                : "已选择 \(selectedMergeRecords.count) 条记录，将按时间先后自动拼接",
+                            systemImage: "arrow.triangle.merge"
+                        )
+                        .font(.callout.weight(.semibold))
+                        Text("中间未录制的时间段将在纪要与文字记录中自动标记中断时段与缺失时长，原分段记录移至废纸篓。")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
+                    Spacer()
+                    if !mergeSelection.isEmpty {
+                        Button("清空") { mergeSelection.removeAll() }
+                    }
+                    Button("取消") { exitMergeMode() }
+                    Button("预览并合并…") { openMergePreview() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(selectedMergeRecords.count < 2)
                 }
+                .padding(14)
+                .background(Color.accentColor.opacity(0.09))
+                .cornerRadius(8)
+            } else {
+                HStack(spacing: 12) {
+                    Label(
+                        manager.active == nil
+                            ? (manager.config.automatic ? "自动检测录制已开启" : "本机零依赖录音就绪")
+                            : "正在录音 · \(MeetingRecord.shortClock(manager.elapsed))",
+                        systemImage: manager.active == nil ? "waveform" : "record.circle.fill"
+                    )
+                    .foregroundColor(manager.active == nil ? .primary : .red)
+
+                    Spacer()
+
+                    if let id = manager.active {
+                        Button(floatingPanel.isVisible ? "隐藏悬浮窗" : "桌边悬浮窗") { floatingPanel.toggle() }
+                        Button("进入实时详情") {
+                            manager.selected = id
+                            detailTab = 0
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                    }
+                }
+                .padding(14)
+                .background(Color.accentColor.opacity(0.07))
+                .cornerRadius(8)
             }
-            .padding(14)
-            .background(Color.accentColor.opacity(0.07))
-            .cornerRadius(8)
 
             TextField("搜索会议标题、议题或转录内容", text: $search)
                 .textFieldStyle(.roundedBorder)
@@ -147,31 +229,7 @@ struct MeetingView: View {
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(filteredRecords) { record in
-                        Button {
-                            manager.selected = record.id
-                            detailTab = (record.notes?.isEmpty == false || !record.summaries.isEmpty || manager.active == record.id) ? 0 : 1
-                        } label: {
-                            HStack(spacing: 14) {
-                                Image(systemName: manager.active == record.id ? "record.circle.fill" : "waveform")
-                                    .font(.title2)
-                                    .foregroundColor(manager.active == record.id ? .red : .accentColor)
-                                VStack(alignment: .leading, spacing: 5) {
-                                    Text(record.title).font(.headline)
-                                    Text("\(record.source) · \(record.date.formatted(date: .abbreviated, time: .shortened)) · \(MeetingRecord.timestamp(record.duration)) · \(record.segments.count) 句")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                }
-                                Spacer()
-                                Text(stateLabel(record))
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                                Image(systemName: "chevron.right")
-                                    .foregroundColor(.secondary)
-                            }
-                            .padding(.vertical, 16)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
+                        libraryRow(record)
                         Divider()
                     }
                     if manager.records.isEmpty {
@@ -190,6 +248,204 @@ struct MeetingView: View {
             }
             Text(manager.status).font(.caption).foregroundColor(.secondary)
         }
+    }
+
+    @ViewBuilder
+    private func libraryRow(_ record: MeetingRecord) -> some View {
+        let isRecording = manager.active == record.id
+        let isBusy = manager.busy.contains(record.id)
+        let canSelectForMerge = !isRecording && !isBusy
+        let isSelectedForMerge = mergeSelection.contains(record.id)
+        let stepOrder = mergeOrderMap[record.id]
+
+        Button {
+            if isMerging {
+                guard canSelectForMerge else { return }
+                if isSelectedForMerge {
+                    mergeSelection.remove(record.id)
+                } else {
+                    mergeSelection.insert(record.id)
+                }
+            } else {
+                manager.selected = record.id
+                detailTab = (record.notes?.isEmpty == false || !record.summaries.isEmpty || isRecording) ? 0 : 1
+            }
+        } label: {
+            HStack(spacing: 14) {
+                if isMerging {
+                    Image(systemName: !canSelectForMerge
+                          ? "clock.arrow.circlepath"
+                          : (isSelectedForMerge ? "checkmark.circle.fill" : "circle"))
+                        .font(.title2)
+                        .foregroundColor(!canSelectForMerge ? .secondary : (isSelectedForMerge ? .accentColor : .secondary))
+                } else {
+                    Image(systemName: isRecording ? "record.circle.fill" : "waveform")
+                        .font(.title2)
+                        .foregroundColor(isRecording ? .red : .accentColor)
+                }
+
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(record.title).font(.headline)
+                    Text(recordSubtitle(record))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+
+                if isMerging, let stepOrder {
+                    Text("第 \(stepOrder) 段")
+                        .font(.caption.weight(.semibold))
+                        .foregroundColor(.accentColor)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Capsule().fill(Color.accentColor.opacity(0.14)))
+                }
+
+                Text(stateLabel(record))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                if !isMerging {
+                    Image(systemName: "chevron.right")
+                        .foregroundColor(.secondary)
+                }
+            }
+            .padding(.vertical, 16)
+            .padding(.horizontal, isMerging ? 8 : 0)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(isMerging && isSelectedForMerge ? Color.accentColor.opacity(0.08) : Color.clear)
+            )
+            .opacity(isMerging && !canSelectForMerge ? 0.5 : 1.0)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(isMerging && !canSelectForMerge)
+        .contextMenu {
+            if !isRecording && !isBusy && mergeableRecords.count >= 2 {
+                Button("与其他会议记录合并…") {
+                    enterMergeMode(preselecting: record.id)
+                }
+            }
+            if !isRecording && !isBusy {
+                Button("移至废纸篓", role: .destructive) {
+                    manager.delete(record.id)
+                }
+            }
+        }
+    }
+
+    private func recordSubtitle(_ record: MeetingRecord) -> String {
+        var parts = [
+            record.source,
+            record.date.formatted(date: .abbreviated, time: .shortened),
+            MeetingRecord.timestamp(record.duration),
+            "\(record.segments.count) 句",
+        ]
+        if let mergedCount = record.mergedSourceCount, mergedCount >= 2 {
+            parts.append("合并自 \(mergedCount) 段")
+        }
+        if let gaps = record.gaps, !gaps.isEmpty {
+            parts.append("含 \(gaps.count) 处中断")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private var mergePreviewSheet: some View {
+        let plan = MeetingMerger.plan(records: selectedMergeRecords)
+        let timeFmt: DateFormatter = {
+            let f = DateFormatter()
+            f.locale = Locale(identifier: "zh_CN")
+            f.dateFormat = "HH:mm:ss"
+            return f
+        }()
+
+        return VStack(alignment: .leading, spacing: 14) {
+            Text("合并 \(plan.parts.count) 条会议记录").font(.headline)
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text("合并后的会议名称")
+                    .font(.caption.weight(.medium))
+                    .foregroundColor(.secondary)
+                TextField("输入合并后的会议标题", text: $mergeTitleDraft)
+                    .textFieldStyle(.roundedBorder)
+            }
+
+            Text("时间轴拼接与中断检测预览")
+                .font(.caption.weight(.medium))
+                .foregroundColor(.secondary)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(Array(plan.parts.enumerated()), id: \.element.id) { idx, part in
+                        if let gap = plan.boundaryGapsByPartIndex[idx] {
+                            MeetingGapNoticeBanner(gap: gap)
+                        }
+                        HStack(spacing: 10) {
+                            Text("第 \(idx + 1) 段")
+                                .font(.caption.weight(.semibold))
+                                .foregroundColor(.accentColor)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 2)
+                                .background(Capsule().fill(Color.accentColor.opacity(0.14)))
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(part.title)
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .lineLimit(1)
+                                Text("\(timeFmt.string(from: part.startDate)) – \(timeFmt.string(from: part.endDate))  ·  时长 \(MeetingRecord.timestamp(part.localSpan))  ·  \(part.segmentCount) 句")
+                                    .font(.system(size: 11.5).monospacedDigit())
+                                    .foregroundColor(.secondary)
+                            }
+                            Spacer()
+                        }
+                        .padding(10)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .controlBackgroundColor)))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.16), lineWidth: 1))
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+            .frame(minHeight: 140, maxHeight: 280)
+
+            if plan.hasLongGapWarning {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.orange)
+                    Text("检测到所选分段之间间隔超过 4 小时，请确认它们属于同一场会议。")
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                }
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color.orange.opacity(0.12)))
+            }
+
+            Text("合并后总跨度 \(MeetingRecord.timestamp(plan.totalDuration))，共 \(plan.totalSegments) 句发言。原有的 \(plan.parts.count) 条分段记录将移至废纸篓。")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            HStack {
+                Button("取消") {
+                    showMergeSheet = false
+                }
+                Spacer()
+                Button("确认合并") {
+                    let ids = Set(selectedMergeRecords.map(\.id))
+                    let custom = mergeTitleDraft
+                    showMergeSheet = false
+                    if let newID = manager.mergeRecords(ids: ids, customTitle: custom),
+                       let merged = manager.records.first(where: { $0.id == newID }) {
+                        exitMergeMode()
+                        detailTab = (merged.notes?.isEmpty == false || !merged.summaries.isEmpty) ? 0 : 1
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(plan.parts.count < 2)
+            }
+        }
+        .padding(24)
+        .frame(width: 560)
     }
 
     private func stateLabel(_ record: MeetingRecord) -> String {
@@ -346,11 +602,20 @@ struct MeetingView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 60)
                 } else {
+                    if let gaps = record.gaps, !gaps.isEmpty {
+                        ForEach(gaps.sorted { $0.start < $1.start }) { gap in
+                            MeetingGapNoticeBanner(gap: gap, onJumpToTime: { sec in
+                                jumpTargetTime = sec
+                                jumpToken += 1
+                                detailTab = 1
+                            })
+                        }
+                    }
                     Text(record.summaryState == "unconfigured"
                          ? "文字记录已就绪。请在「会议设置 → 智能纪要模型」中配置兼容接口与默认模型后点击生成。"
                          : "点击下方「生成 / 更新纪要」即可提炼议题、结论高亮、待办与同音错词表。")
                         .foregroundColor(.secondary)
-                        .padding(.vertical, 40)
+                        .padding(.vertical, 32)
                 }
             }
             .padding(.vertical, 6)
@@ -375,7 +640,8 @@ struct MeetingView: View {
     }
 
     private func footerActionBar(_ record: MeetingRecord) -> some View {
-        HStack(spacing: 10) {
+        let hasGaps = !(record.gaps ?? []).isEmpty
+        return HStack(spacing: 10) {
             Button("生成 / 更新纪要") {
                 Task { await manager.summarize(record.id) }
             }
@@ -385,22 +651,31 @@ struct MeetingView: View {
                 Button("导出 Word 文档 (.docx)") {
                     manager.exportDocx(record)
                 }
-                .disabled(record.segments.isEmpty && record.notes == nil && record.summaries.isEmpty)
+                .disabled(record.segments.isEmpty && record.notes == nil && record.summaries.isEmpty && !hasGaps)
 
                 Button("导出 Markdown（纪要 + 全文 .md）") {
                     manager.exportMarkdown(record, includeTranscript: true)
                 }
-                .disabled(record.segments.isEmpty && record.notes == nil && record.summaries.isEmpty)
+                .disabled(record.segments.isEmpty && record.notes == nil && record.summaries.isEmpty && !hasGaps)
 
                 Button("仅导出纪要 (.md)") {
                     manager.exportMarkdown(record, includeTranscript: false)
                 }
-                .disabled(record.notes == nil && record.summaries.isEmpty)
+                .disabled(record.notes == nil && record.summaries.isEmpty && !hasGaps)
 
                 Button("仅导出纯转录 (.md)") {
                     manager.exportTranscriptOnly(record)
                 }
-                .disabled(record.segments.isEmpty)
+                .disabled(record.segments.isEmpty && !hasGaps)
+            }
+
+            if mergeableRecords.count >= 2 {
+                Button("合并其他记录…") {
+                    let currentID = record.id
+                    manager.selected = nil
+                    enterMergeMode(preselecting: currentID)
+                }
+                .disabled(manager.busy.contains(record.id))
             }
 
             if manager.config.transcription == "cloud" || manager.config.liveEngine == "xasr" || !manager.config.python.isEmpty {

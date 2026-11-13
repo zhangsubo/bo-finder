@@ -576,6 +576,11 @@ private struct MeetingFloatingPanelRootView: View {
                             .textSelection(.enabled)
                     }
                 } else {
+                    if let gaps = rec.gaps, !gaps.isEmpty {
+                        ForEach(gaps.sorted { $0.start < $1.start }) { gap in
+                            MeetingGapNoticeBanner(gap: gap, onJumpToTime: { t in jumpToTranscript(at: t) })
+                        }
+                    }
                     VStack(spacing: 12) {
                         Text("本场会议尚未生成结构化纪要")
                             .font(.system(size: 13))
@@ -590,7 +595,7 @@ private struct MeetingFloatingPanelRootView: View {
                         }
                     }
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 48)
+                    .padding(.vertical, 36)
                 }
             }
             .padding(18)
@@ -854,6 +859,41 @@ private struct MeetingFloatingPanelRootView: View {
 
 // MARK: - Shared Structured Notes View (Used by Both Floating Panel & Main Window)
 
+struct MeetingGapNoticeBanner: View {
+    let gap: MeetingGap
+    var onJumpToTime: ((Double) -> Void)? = nil
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "waveform.slash")
+                .font(.system(size: 11.5, weight: .semibold))
+                .foregroundColor(.orange)
+
+            Text(gap.markerText())
+                .font(.system(size: 12.5, weight: .medium))
+                .foregroundColor(.primary)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            let spanClock = "\(MeetingRecord.shortClock(gap.start))–\(MeetingRecord.shortClock(gap.end))"
+            if let onJumpToTime {
+                MeetingTimeJumpLink(label: spanClock, seconds: gap.start, action: onJumpToTime)
+            } else {
+                Text(spanClock)
+                    .font(.system(size: 11, weight: .medium).monospacedDigit())
+                    .foregroundColor(.orange)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(RoundedRectangle(cornerRadius: 9).fill(Color.orange.opacity(0.09)))
+        .overlay(
+            RoundedRectangle(cornerRadius: 9)
+                .stroke(Color.orange.opacity(0.30), style: StrokeStyle(lineWidth: 1, dash: [5, 3]))
+        )
+    }
+}
+
 struct MeetingStructuredNotesView: View {
     let record: MeetingRecord
     let notes: MeetingStructuredNotes
@@ -862,6 +902,48 @@ struct MeetingStructuredNotesView: View {
     var updating: Bool = false
     var onJumpToTime: (Double) -> Void = { _ in }
     var onSearchTerm: (String) -> Void = { _ in }
+
+    private enum TopicTimelineItem: Identifiable {
+        case topic(index: Int, topic: MeetingNoteTopic, endTime: Double?)
+        case gap(MeetingGap)
+
+        var id: String {
+            switch self {
+            case .topic(let idx, let t, _): return "topic-\(idx)-\(t.id)"
+            case .gap(let g): return "gap-\(g.id.uuidString)"
+            }
+        }
+    }
+
+    private var sortedGaps: [MeetingGap] {
+        (record.gaps ?? []).sorted { $0.start < $1.start }
+    }
+
+    private var topicTimelineItems: [TopicTimelineItem] {
+        var emittedGapIDs = Set<UUID>()
+        var out: [TopicTimelineItem] = []
+        for (idx, topic) in notes.topics.enumerated() {
+            for gap in sortedGaps where !emittedGapIDs.contains(gap.id) && gap.start <= topic.start {
+                emittedGapIDs.insert(gap.id)
+                out.append(.gap(gap))
+            }
+            let rawNextStart: Double? = idx + 1 < notes.topics.count
+                ? notes.topics[idx + 1].start
+                : (live ? nil : max(record.duration, record.segments.last?.end ?? 0))
+            let clampedEnd: Double?
+            if let gapInSpan = sortedGaps.first(where: { $0.start > topic.start && (rawNextStart == nil || $0.start < rawNextStart!) }) {
+                clampedEnd = gapInSpan.start
+            } else {
+                clampedEnd = rawNextStart
+            }
+            out.append(.topic(index: idx, topic: topic, endTime: clampedEnd))
+        }
+        for gap in sortedGaps where !emittedGapIDs.contains(gap.id) {
+            emittedGapIDs.insert(gap.id)
+            out.append(.gap(gap))
+        }
+        return out
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -885,6 +967,14 @@ struct MeetingStructuredNotesView: View {
                 .padding(14)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(RoundedRectangle(cornerRadius: 12).fill(Color.accentColor.opacity(0.06)))
+            }
+
+            if notes.topics.isEmpty && !sortedGaps.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(sortedGaps) { gap in
+                        MeetingGapNoticeBanner(gap: gap, onJumpToTime: onJumpToTime)
+                    }
+                }
             }
 
             if !notes.conclusions.isEmpty || !notes.todos.isEmpty {
@@ -912,18 +1002,20 @@ struct MeetingStructuredNotesView: View {
                         .font(.system(size: 13, weight: .bold))
                         .foregroundColor(.secondary)
 
-                    ForEach(Array(notes.topics.enumerated()), id: \.element.id) { idx, topic in
-                        let nextStart: Double? = idx + 1 < notes.topics.count
-                            ? notes.topics[idx + 1].start
-                            : (live ? nil : record.segments.last?.end)
-                        MeetingTopicCardView(
-                            topic: topic,
-                            endTime: nextStart,
-                            isCurrent: live && idx == notes.topics.count - 1,
-                            isUpdating: updating && idx == notes.topics.count - 1,
-                            freshItems: freshItems,
-                            onJumpToTime: onJumpToTime
-                        )
+                    ForEach(topicTimelineItems) { item in
+                        switch item {
+                        case .topic(let idx, let topic, let endTime):
+                            MeetingTopicCardView(
+                                topic: topic,
+                                endTime: endTime,
+                                isCurrent: live && idx == notes.topics.count - 1,
+                                isUpdating: updating && idx == notes.topics.count - 1,
+                                freshItems: freshItems,
+                                onJumpToTime: onJumpToTime
+                            )
+                        case .gap(let gap):
+                            MeetingGapNoticeBanner(gap: gap, onJumpToTime: onJumpToTime)
+                        }
                     }
                 }
             }
@@ -1363,6 +1455,7 @@ struct MeetingRichTranscriptView: View {
     @State private var matchIndex: Int = 0
     @State private var followLatest: Bool = true
     @State private var highlightedSegmentID: UUID? = nil
+    @State private var highlightedGapID: UUID? = nil
 
     private var displayedSegments: [MeetingSegment] {
         if !record.segments.isEmpty {
@@ -1371,16 +1464,31 @@ struct MeetingRichTranscriptView: View {
         return record.preview
     }
 
+    private var timelineEntries: [MeetingTimelineEntry] {
+        record.timelineEntries(usingPreviewFallback: true)
+    }
+
     private var expandedSearchTerms: [String] {
         MeetingNoteTerm.expandQuery(query, terms: record.notes?.terms ?? [])
     }
 
-    private var matchedIDs: [UUID] {
+    private var matchedIDs: [String] {
         let terms = expandedSearchTerms
         guard !terms.isEmpty else { return [] }
-        return displayedSegments.filter { seg in
-            terms.contains { seg.text.localizedCaseInsensitiveContains($0) || record.speakerName(seg.speaker).localizedCaseInsensitiveContains($0) }
-        }.map(\.id)
+        return timelineEntries.compactMap { entry in
+            switch entry {
+            case .segment(let seg):
+                let hit = terms.contains {
+                    seg.text.localizedCaseInsensitiveContains($0)
+                        || record.speakerName(seg.speaker).localizedCaseInsensitiveContains($0)
+                }
+                return hit ? entry.id : nil
+            case .gap(let gap):
+                let marker = gap.markerText()
+                let hit = terms.contains { marker.localizedCaseInsensitiveContains($0) }
+                return hit ? entry.id : nil
+            }
+        }
     }
 
     private var safeMatchIndex: Int {
@@ -1395,10 +1503,17 @@ struct MeetingRichTranscriptView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 12) {
-                        ForEach(displayedSegments) { seg in
-                            transcriptRow(seg)
-                                .id(seg.id)
-                            Divider()
+                        ForEach(timelineEntries) { entry in
+                            switch entry {
+                            case .segment(let seg):
+                                transcriptRow(seg)
+                                    .id(entry.id)
+                                Divider()
+                            case .gap(let gap):
+                                gapTimelineRow(gap)
+                                    .id(entry.id)
+                                Divider()
+                            }
                         }
 
                         if live, !volatileText.isEmpty {
@@ -1418,7 +1533,7 @@ struct MeetingRichTranscriptView: View {
                             .id("volatile-tail")
                         }
 
-                        if displayedSegments.isEmpty && volatileText.isEmpty {
+                        if timelineEntries.isEmpty && volatileText.isEmpty {
                             Text(live ? "正在等待第一句发言…" : "暂无文字记录")
                                 .font(.system(size: 13))
                                 .foregroundColor(.secondary)
@@ -1443,11 +1558,23 @@ struct MeetingRichTranscriptView: View {
                 }
                 .onChange(of: jumpToken) { _, _ in
                     guard let target = jumpTargetTime else { return }
-                    if let hit = displayedSegments.min(by: { abs($0.start - target) < abs($1.start - target) }) {
+                    if let gapHit = (record.gaps ?? []).first(where: { target >= $0.start - 0.5 && target <= $0.end + 0.5 }) {
+                        followLatest = false
+                        highlightedGapID = gapHit.id
+                        withAnimation(.easeInOut(duration: 0.25)) {
+                            proxy.scrollTo("gap-\(gapHit.id.uuidString)", anchor: .center)
+                        }
+                        let currentGapID = gapHit.id
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                            if highlightedGapID == currentGapID {
+                                highlightedGapID = nil
+                            }
+                        }
+                    } else if let hit = displayedSegments.min(by: { abs($0.start - target) < abs($1.start - target) }) {
                         followLatest = false
                         highlightedSegmentID = hit.id
                         withAnimation(.easeInOut(duration: 0.25)) {
-                            proxy.scrollTo(hit.id, anchor: .center)
+                            proxy.scrollTo("seg-\(hit.id.uuidString)", anchor: .center)
                         }
                         let currentID = hit.id
                         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
@@ -1547,7 +1674,7 @@ struct MeetingRichTranscriptView: View {
     private func transcriptRow(_ seg: MeetingSegment) -> some View {
         let speakerColor = MeetingSpeakerPalette.color(for: seg.speaker, in: record)
         let isJumpHighlight = highlightedSegmentID == seg.id
-        let isActiveSearchMatch = !matchedIDs.isEmpty && matchedIDs[safeMatchIndex] == seg.id
+        let isActiveSearchMatch = !matchedIDs.isEmpty && matchedIDs[safeMatchIndex] == "seg-\(seg.id.uuidString)"
 
         return HStack(alignment: .top, spacing: 10) {
             Button(MeetingRecord.shortClock(seg.start)) {
@@ -1593,6 +1720,42 @@ struct MeetingRichTranscriptView: View {
                 isJumpHighlight ? Color.accentColor.opacity(0.16)
                     : (isActiveSearchMatch ? Color.orange.opacity(0.14) : Color.clear)
             )
+        )
+    }
+
+    private func gapTimelineRow(_ gap: MeetingGap) -> some View {
+        let isJumpHighlight = highlightedGapID == gap.id
+        let isActiveSearchMatch = !matchedIDs.isEmpty && matchedIDs[safeMatchIndex] == "gap-\(gap.id.uuidString)"
+        let activeHighlight = isJumpHighlight || isActiveSearchMatch
+        return HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text("\(MeetingRecord.shortClock(gap.start))–\(MeetingRecord.shortClock(gap.end))")
+                .font(.system(size: 11, weight: .medium).monospacedDigit())
+                .foregroundColor(.orange)
+
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Image(systemName: "waveform.slash")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundColor(.orange)
+                Text(highlightedText(gap.markerText()))
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(.primary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 8).fill(
+                activeHighlight ? Color.accentColor.opacity(0.18) : Color.orange.opacity(0.09)
+            )
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(
+                    activeHighlight ? Color.accentColor.opacity(0.5) : Color.orange.opacity(0.30),
+                    style: StrokeStyle(lineWidth: 1, dash: [5, 3])
+                )
         )
     }
 

@@ -50,24 +50,14 @@ final class CloudQuickBarController {
 
         let manager = CutPasteManager.shared
         let state = manager.state
-        let formats = state.config.enabledFormats.isEmpty
-            ? [.posix, .url, .windows, .terminal]
-            : state.config.enabledFormats
+        let formats = state.config.displayFormats
 
         let rowStack = NSStackView()
         rowStack.orientation = .horizontal
         rowStack.alignment = .centerY
         rowStack.spacing = 6
-        rowStack.edgeInsets = NSEdgeInsets(top: 6, left: 10, bottom: 6, right: 10)
+        rowStack.edgeInsets = NSEdgeInsets(top: 6, left: 8, bottom: 6, right: 8)
         rowStack.translatesAutoresizingMaskIntoConstraints = false
-
-        // Badge icon + label
-        let badgeLabel = NSTextField(labelWithString: "DeskSide")
-        badgeLabel.font = NSFont.systemFont(ofSize: 11, weight: .bold)
-        badgeLabel.textColor = .secondaryLabelColor
-        rowStack.addArrangedSubview(badgeLabel)
-
-        rowStack.addArrangedSubview(makeVerticalDivider())
 
         // Copy Path format buttons
         for (idx, format) in formats.enumerated() {
@@ -134,8 +124,9 @@ final class CloudQuickBarController {
             }
         }
 
+        rowStack.layoutSubtreeIfNeeded()
         let fittingSize = rowStack.fittingSize
-        let width = max(fittingSize.width + 20, 260)
+        let width = max(fittingSize.width + 8, 80)
         let height: CGFloat = 38
 
         let win = ensurePanel(size: NSSize(width: width, height: height))
@@ -215,9 +206,7 @@ final class CloudQuickBarController {
     }
 
     @objc private func handleCopyFormatClicked(_ sender: NSButton) {
-        let formats = CutPasteManager.shared.state.config.enabledFormats.isEmpty
-            ? [.posix, .url, .windows, .terminal]
-            : CutPasteManager.shared.state.config.enabledFormats
+        let formats = CutPasteManager.shared.state.config.displayFormats
         guard sender.tag >= 0 && sender.tag < formats.count else { return }
         let format = formats[sender.tag]
         let urls = currentTargetURLs

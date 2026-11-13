@@ -165,6 +165,9 @@ final class MeetingManager: ObservableObject {
             ))
         }
         records[index].chunks.sort { $0.start < $1.start }
+        if let maxEnd = records[index].chunks.map({ $0.start + $0.duration }).max() {
+            records[index].duration = max(records[index].duration, maxEnd)
+        }
     }
 
     func saveConfiguration() {
@@ -618,7 +621,7 @@ final class MeetingManager: ObservableObject {
                 rec.title = MeetingNotesParser.formattedAutoTitle(noteTitle: noteTitle, date: rec.date)
             }
             if final {
-                let md = MeetingDocumentExport.notesMarkdown(notes)
+                let md = MeetingDocumentExport.notesMarkdown(notes, gaps: rec.gaps ?? [])
                 if !md.isEmpty {
                     rec.summaries.append(MeetingSummary(
                         transcriptRevision: rec.revision,
@@ -751,7 +754,104 @@ final class MeetingManager: ObservableObject {
         }
     }
 
-    /// Plays from `time` and automatically chains subsequent chunks from the same track.
+    /// Merges multiple interrupted/segmented meeting records chronologically into one complete record,
+    /// moves the original fragment folders to the macOS Trash, and triggers full summary synthesis if configured.
+    @discardableResult
+    func mergeRecords(ids: Set<UUID>, customTitle: String? = nil) -> UUID? {
+        guard ids.count >= 2 else {
+            error = "请至少选择两条会议记录进行合并。"
+            return nil
+        }
+        if let active, ids.contains(active) {
+            error = "正在录音的会议无法合并，请先结束当前录音。"
+            return nil
+        }
+        if !busy.isDisjoint(with: ids) {
+            error = "所选会议中有正在处理的任务，请稍候再试。"
+            return nil
+        }
+        let sourceRecords = records.filter { ids.contains($0.id) }
+        guard sourceRecords.count >= 2 else {
+            error = "未找到足够的可合并会议记录。"
+            return nil
+        }
+
+        let mergedID = UUID()
+        let mergedDir = MeetingFiles.directory(mergedID)
+        var mergedRecord: MeetingRecord
+        do {
+            let result = try MeetingMerger.merge(
+                records: sourceRecords,
+                customTitle: customTitle,
+                mergedID: mergedID
+            )
+            mergedRecord = result.record
+            try FileManager.default.createDirectory(
+                at: mergedDir,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+            var missingFiles = Set<String>()
+            for copy in result.chunkCopies {
+                let srcURL = MeetingFiles.directory(copy.sourceRecordID).appendingPathComponent(copy.sourceFile)
+                let dstURL = mergedDir.appendingPathComponent(copy.destinationFile)
+                if FileManager.default.fileExists(atPath: srcURL.path) {
+                    try FileManager.default.copyItem(at: srcURL, to: dstURL)
+                } else {
+                    missingFiles.insert(copy.destinationFile)
+                }
+            }
+            if !missingFiles.isEmpty {
+                mergedRecord.chunks.removeAll { missingFiles.contains($0.file) }
+            }
+            try MeetingFiles.save(mergedRecord)
+        } catch {
+            try? FileManager.default.removeItem(at: mergedDir)
+            self.error = "合并会议记录失败：\(error.localizedDescription)"
+            return nil
+        }
+
+        var trashedIDs = Set<UUID>()
+        var trashErrors: [String] = []
+        for src in sourceRecords {
+            let srcDir = MeetingFiles.directory(src.id)
+            if FileManager.default.fileExists(atPath: srcDir.path) {
+                do {
+                    try FileManager.default.trashItem(at: srcDir, resultingItemURL: nil)
+                    trashedIDs.insert(src.id)
+                } catch {
+                    trashErrors.append(src.title)
+                }
+            } else {
+                trashedIDs.insert(src.id)
+            }
+        }
+
+        records.removeAll { trashedIDs.contains($0.id) }
+        records.append(mergedRecord)
+        records.sort { $0.date > $1.date }
+        selected = mergedRecord.id
+        status = "已按时间拼接合并 \(sourceRecords.count) 条会议记录"
+        if !trashErrors.isEmpty {
+            error = "合并已完成，但部分旧记录移至废纸篓失败（\(trashErrors.joined(separator: "、"))）。"
+        } else {
+            error = ""
+        }
+
+        if !mergedRecord.segments.isEmpty {
+            MeetingSpeakerNamer.shared.maybeGuess(for: mergedRecord.id, force: true)
+            let hasSummaryModel = !config.summaryBase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && !config.summaryModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            if hasSummaryModel {
+                let targetID = mergedRecord.id
+                Task { await self.summarize(targetID) }
+            }
+        }
+        return mergedRecord.id
+    }
+
+    /// Plays from `time` and automatically chains subsequent contiguous chunks from the same track,
+    /// stopping cleanly at unrecorded interruption gaps (>2s).
     func play(_ id: UUID, at time: Double) {
         guard let record = records.first(where: { $0.id == id }) else { return }
         let sorted = record.chunks.sorted { $0.start < $1.start }
@@ -763,9 +863,14 @@ final class MeetingManager: ObservableObject {
         let targetSource = sorted[startIdx].source
         let dir = MeetingFiles.directory(id)
         var queue: [(url: URL, startOffset: Double)] = []
-        for (idx, chunk) in sorted[startIdx...].enumerated() where chunk.source == targetSource {
-            let offset = idx == 0 ? max(0, time - chunk.start) : 0
+        var prevEnd: Double? = nil
+        for chunk in sorted[startIdx...] where chunk.source == targetSource {
+            if let prevEnd, chunk.start - prevEnd > 2.0 {
+                break
+            }
+            let offset = queue.isEmpty ? max(0, time - chunk.start) : 0
             queue.append((dir.appendingPathComponent(chunk.file), offset))
+            prevEnd = chunk.start + chunk.duration
             if queue.count >= 12 { break }
         }
         playbackRemainingChunks = queue

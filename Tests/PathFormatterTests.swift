@@ -364,6 +364,61 @@ struct PathFormatterTests {
                 false,
                 "Does not nag users who never enabled Accessibility on silent update"
             )
+
+            // 13. Path format top-to-bottom ordering, move/drag, toggle rank preservation, and reset
+            var orderCfg = BoFinderConfig(
+                enabledFormats: [.posix, .terminal],
+                formatOrder: PathFormat.allCases
+            )
+            assertEqual(orderCfg.displayFormats, [.posix, .terminal], "Initial displayFormats follows top-to-bottom formatOrder")
+
+            // Move terminal from index 3 up above posix (index 0)
+            orderCfg.moveFormat(.terminal, to: .posix)
+            assertEqual(orderCfg.formatOrder.first, .terminal, "Dragging terminal onto posix moves terminal to top row")
+            assertEqual(orderCfg.displayFormats, [.terminal, .posix], "Higher row appears earlier in displayFormats")
+            assertEqual(orderCfg.enabledFormats, [.terminal, .posix], "enabledFormats stays synchronized with formatOrder")
+
+            // Move unchecked markdown up to index 1 (between terminal and posix), then enable it
+            orderCfg.moveFormat(.markdown, to: .posix)
+            assertEqual(Array(orderCfg.formatOrder.prefix(3)), [.terminal, .markdown, .posix], "Unchecked row can be reordered independently")
+            assertEqual(orderCfg.displayFormats, [.terminal, .posix], "Unchecked row stays hidden until enabled")
+            orderCfg.setFormatEnabled(.markdown, enabled: true)
+            assertEqual(orderCfg.displayFormats, [.terminal, .markdown, .posix], "Enabling reordered row inserts it at its visual rank instead of appending")
+
+            // Toggling terminal off and back on preserves its #1 position
+            orderCfg.setFormatEnabled(.terminal, enabled: false)
+            assertEqual(orderCfg.displayFormats, [.markdown, .posix], "Disabling top row removes it from displayFormats")
+            orderCfg.setFormatEnabled(.terminal, enabled: true)
+            assertEqual(orderCfg.displayFormats, [.terminal, .markdown, .posix], "Re-enabling top row restores it to #1 rank")
+
+            // Stepwise up/down movement clamps cleanly at bounds
+            orderCfg.moveFormat(.terminal, by: -1)
+            assertEqual(orderCfg.formatOrder.first, .terminal, "Moving top row up is a safe no-op")
+            orderCfg.moveFormat(.terminal, by: 1)
+            assertEqual(orderCfg.displayFormats, [.markdown, .terminal, .posix], "Moving row down by 1 swaps its rank with neighbor")
+
+            // Cannot disable the very last enabled format
+            orderCfg.setFormatEnabled(.markdown, enabled: false)
+            orderCfg.setFormatEnabled(.posix, enabled: false)
+            orderCfg.setFormatEnabled(.terminal, enabled: false)
+            assertEqual(orderCfg.displayFormats, [.terminal], "Last remaining format cannot be unchecked")
+
+            // JSON round-trip preserves custom order including unchecked items
+            let orderData = try JSONEncoder().encode(orderCfg)
+            let decodedOrderCfg = try JSONDecoder().decode(BoFinderConfig.self, from: orderData)
+            assertEqual(decodedOrderCfg.formatOrder, orderCfg.formatOrder, "Custom formatOrder persists across JSON round-trip")
+            assertEqual(decodedOrderCfg.displayFormats, [.terminal], "Enabled formats persist with custom formatOrder")
+
+            // Reset restores default PathFormat.allCases order while keeping enabled selection
+            var resetCfg = orderCfg
+            resetCfg.setFormatEnabled(.posix, enabled: true)
+            resetCfg.resetFormatOrder()
+            assertEqual(resetCfg.formatOrder, PathFormat.allCases, "resetFormatOrder restores default PathFormat.allCases order")
+            assertEqual(resetCfg.displayFormats, [.posix, .terminal], "resetFormatOrder re-sorts enabled formats to default order")
+
+            for sym in ["line.3.horizontal", "chevron.up", "chevron.down", "arrow.up.arrow.down"] {
+                assertEqual(NSImage(systemSymbolName: sym, accessibilityDescription: nil) != nil, true, "SF Symbol '\(sym)' exists for reorder UI")
+            }
         } catch {
             failed += 1
             print("  ❌ Configuration compatibility: \(error)")

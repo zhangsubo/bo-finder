@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 @main
@@ -536,6 +537,163 @@ struct MeetingTests {
             AppUpdaterLogic.parseLocalSigningIdentity(from: validOut) == "87E2CA34BC9AB5543F97BDA3EEF26C838B129700",
             "Extracts exact 40-char SHA-1 hash for trusted DeskSide Local Signer identity"
         )
+
+        // 15. Multi-record chronological merging, wall-clock gap markers, speaker cluster safety, & exports
+        let shanghaiTZ = TimeZone(identifier: "Asia/Shanghai")!
+        var shanghaiCal = Calendar(identifier: .gregorian)
+        shanghaiCal.timeZone = shanghaiTZ
+        let t1000 = shanghaiCal.date(from: DateComponents(year: 2026, month: 11, day: 13, hour: 10, minute: 0, second: 0))!
+        let t101510 = shanghaiCal.date(from: DateComponents(year: 2026, month: 11, day: 13, hour: 10, minute: 15, second: 10))!
+        let t103245 = shanghaiCal.date(from: DateComponents(year: 2026, month: 11, day: 13, hour: 10, minute: 32, second: 45))!
+
+        // Part 1: 10:00:00 – 10:12:00 (720s)
+        var part1 = MeetingRecord(title: "腾讯会议 · 10:00", date: t1000, source: "腾讯会议", duration: 720)
+        part1.phase = "interrupted"
+        part1.chunks = [MeetingAudioChunk(file: "mic-0-a.wav", start: 0, duration: 720, source: "mic")]
+        part1.segments = [
+            MeetingSegment(start: 10, end: 20, speaker: "me", text: "我们先对齐双十一大促网关方案"),
+            MeetingSegment(start: 690, end: 715, speaker: "v0", text: "好的，目前限流阈值设在五千", voiceID: 0),
+        ]
+        part1.speakerNames["v0"] = "张工"
+        var notes1 = MeetingStructuredNotes()
+        notes1.title = "大促网关评审"
+        notes1.summary = "前半段对齐了网关限流阈值。"
+        notes1.topics = [
+            MeetingNoteTopic(start: 10, title: "限流阈值对齐", summary: "确认五千 QPS 上限", points: ["当前阈值 5000"], pointTimes: [690]),
+        ]
+        notes1.conclusions = [MeetingNoteItem(text: "限流阈值保持 5000", support: 1, t: 690)]
+        notes1.terms = [MeetingNoteTerm(name: "DeskSide", note: "会议助手", heard: ["袋鼠赛"])]
+        notes1.coveredCount = 2
+        part1.notes = notes1
+
+        // Part 2 (passed out of order to verify chronological sorting): 10:15:10 – 10:30:10 (900s, offset = 910s, gap = 720..910 = 3m10s)
+        var part2 = MeetingRecord(title: "11月13日 网关压测排期", date: t101510, source: "腾讯会议", duration: 900)
+        part2.userRenamedTitle = true
+        part2.chunks = [MeetingAudioChunk(file: "system-5000-b.wav", start: 5, duration: 895, source: "system")]
+        part2.segments = [
+            // Unnamed v0 in part2 is a new session cluster and MUST NOT falsely inherit "张工" from part1's v0
+            MeetingSegment(start: 6, end: 18, speaker: "v0", text: "刚才网络断了一下，我是李总，接着说压测", voiceID: 0),
+            // Explicitly named "张工" in part2's v1 MUST unify with part1's "张工"
+            MeetingSegment(start: 40, end: 55, speaker: "v1", text: "明白，压测脚本周四提交", voiceID: 1),
+        ]
+        part2.speakerNames["v1"] = "张工"
+        part2.speakerGuesses = ["v0": MeetingSpeakerGuess(name: "李总", evidence: "00:06 “刚才网络断了一下，我是李总”")]
+        var notes2 = MeetingStructuredNotes()
+        notes2.summary = "后半段明确了周四提交压测脚本。"
+        notes2.topics = [
+            MeetingNoteTopic(start: 6, title: "压测脚本排期", summary: "周四前完成脚本", points: ["周四提交压测脚本"], pointTimes: [40]),
+        ]
+        notes2.todos = [MeetingNoteItem(text: "周四提交压测脚本", owner: "张工", support: 1, t: 40)]
+        notes2.terms = [MeetingNoteTerm(name: "DeskSide", note: "会议助手", heard: ["得克赛"])]
+        notes2.coveredCount = 2
+        part2.notes = notes2
+
+        // Pass [part2, part1] in reverse order to test chronological sorting by date
+        let (merged12, copies12) = try MeetingMerger.merge(records: [part2, part1], timeZone: shanghaiTZ)
+        check(merged12.date == t1000 && merged12.mergedSourceCount == 2, "Merged record anchors to earliest start date and tracks source count")
+        check(merged12.title == "11月13日 网关压测排期" && merged12.userRenamedTitle == true, "Preserves user-renamed title across merged fragments")
+        check(abs(merged12.duration - 1810) < 0.001, "Total merged duration spans wall-clock timeline (910s offset + 900s part2 = 1810s)")
+        check(merged12.gaps?.count == 1, "Detects exact 1 unrecorded interruption gap between 10:12:00 and 10:15:10")
+
+        let gap12 = merged12.gaps![0]
+        check(abs(gap12.start - 720) < 0.001 && abs(gap12.end - 910) < 0.001, "Gap aligns to 720s..910s on unified timeline")
+        check(
+            gap12.markerText(timeZone: shanghaiTZ) == "(10:12–10:15 会议中断未录制，缺失 3分10秒)",
+            "Formats exact interruption wall-clock range and missing duration marker"
+        )
+
+        // Verify audio chunk shifting & filename prefix
+        check(copies12.count == 2 && merged12.chunks.count == 2, "Generates copy instructions for all audio chunks")
+        check(abs(merged12.chunks[1].start - 915) < 0.001 && merged12.chunks[1].file.hasPrefix("system-915000-"), "Shifts second part chunk timestamp by +910s wall-clock offset")
+
+        // Verify speaker cluster isolation vs explicit name unification + AI evidence timestamp shift
+        check(merged12.segments.count == 4, "Preserves all 4 utterances in chronological order")
+        check(merged12.speakerName(merged12.segments[1].speaker) == "张工" && merged12.speakerName(merged12.segments[3].speaker) == "张工", "Unifies speakers explicitly named 张工 across parts")
+        check(merged12.segments[1].speaker == merged12.segments[3].speaker, "Unified named speaker shares canonical speaker key")
+        check(merged12.segments[2].speaker != merged12.segments[1].speaker && merged12.speakerName(merged12.segments[2].speaker) == "李总", "Unnamed v0 in part2 stays isolated from part1 v0 and keeps shifted AI guess")
+        check(merged12.speakerGuesses?[merged12.segments[2].speaker]?.evidence.hasPrefix("15:16 ") == true, "Shifts AI speaker guess evidence clock from 00:06 to 15:16")
+        check(MeetingSpeakerGuessLogic.holds(merged12.speakerGuesses![merged12.segments[2].speaker]!, speakerKey: merged12.segments[2].speaker, in: merged12), "Shifted speaker guess evidence still passes ±2 line proximity check")
+
+        // Verify transcript & timelineEntries include gap marker at exact chronological position
+        let timeline12 = merged12.timelineEntries()
+        check(timeline12.count == 5, "Timeline has 4 segments + 1 interleaved gap entry")
+        if case .gap(let midGap) = timeline12[2] {
+            check(midGap.id == gap12.id, "Gap entry sits strictly between part1 last segment (690s) and part2 first segment (916s)")
+        } else {
+            fatalError("Expected .gap at index 2 of timelineEntries")
+        }
+        let formattedTx = merged12.formattedTranscript(timeZone: shanghaiTZ)
+        check(formattedTx.contains("[00:12:00–00:15:10] (10:12–10:15 会议中断未录制，缺失 3分10秒)"), "Plain transcript interleaves timestamped interruption marker")
+
+        // Verify stitched structured notes shift timestamps, deduplicate glossary, and include gap marker
+        check(merged12.notes?.summary.contains("(10:12–10:15 会议中断未录制，缺失 3分10秒)") == true, "Stitched summary embeds interruption marker between part summaries")
+        check(merged12.notes?.topics.count == 2 && abs((merged12.notes?.topics[1].start ?? 0) - 916) < 0.001, "Shifts part2 topic start time by +910s")
+        check(merged12.notes?.topics[1].pointTime(0) == 950 && merged12.notes?.todos.first?.t == 950, "Shifts topic pointTimes and todo timestamps by +910s")
+        check(merged12.notes?.terms.count == 1 && Set(merged12.notes?.terms.first?.heard ?? []) == ["袋鼠赛", "得克赛"], "Deduplicates glossary terms and merges homophone variants")
+
+        // Verify LLM prompt & ensureGapMarkers post-processing + Markdown / Word .docx export
+        let mergePrompt = MeetingNotesParser.prompt(
+            notes: MeetingStructuredNotes(),
+            segments: merged12.segments,
+            speakerResolver: { merged12.speakerName($0) },
+            from: 0,
+            final: true,
+            gaps: merged12.gaps ?? [],
+            timeZone: shanghaiTZ
+        )
+        check(
+            mergePrompt.contains("[中断未录制 12:00–15:10] (10:12–10:15 会议中断未录制，缺失 3分10秒)"),
+            "LLM summary prompt injects interruption marker at exact break between L2 and L3"
+        )
+        var llmOmittedGapNotes = MeetingStructuredNotes(summary: "模型生成的总结但漏写了括号标记。")
+        MeetingNotesParser.ensureGapMarkers(in: &llmOmittedGapNotes, gaps: merged12.gaps ?? [], timeZone: shanghaiTZ)
+        check(
+            llmOmittedGapNotes.summary.contains("(10:12–10:15 会议中断未录制，缺失 3分10秒)"),
+            "ensureGapMarkers deterministically preserves missing-segment marker when omitted by LLM"
+        )
+
+        let mergedMD = MeetingDocumentExport.markdown(for: merged12, includeTranscript: true, timeZone: shanghaiTZ)
+        let mdOccurrences = mergedMD.components(separatedBy: "(10:12–10:15 会议中断未录制，缺失 3分10秒)").count - 1
+        check(mdOccurrences >= 3, "Exported Markdown marks interruption in summary, topic timeline, and full transcript")
+        let mergedDocx = try MeetingDocumentExport.docx(for: merged12, timeZone: shanghaiTZ)
+        check(mergedDocx.count > 1000 && mergedDocx.prefix(2) == Data([0x50, 0x4B]), "Exported .docx with interruption markers is a valid OOXML archive")
+
+        // Verify iterative 3-part merge ((part1 + part2) + part3) & sub-minute second-level gap formatting (10:30:10 -> 10:32:45 = 2m35s; plus sub-minute check)
+        var part3 = MeetingRecord(title: "尾声补充", date: t103245, source: "手动线上会议", duration: 120)
+        part3.preview = [MeetingSegment(start: 3, end: 12, speaker: "me", text: "补充确认一下回滚预案")]
+        let (merged123, _) = try MeetingMerger.merge(records: [merged12, part3], timeZone: shanghaiTZ)
+        check(merged123.mergedSourceCount == 3 && merged123.gaps?.count == 2, "Iterative merge preserves prior gap and adds second interruption gap")
+        check(merged123.source == "腾讯会议 + 手动线上会议", "Combines distinct sources in chronological order")
+        check(merged123.segments.count == 5 && merged123.segments.last?.text == "补充确认一下回滚预案", "Promotes preview draft when interrupted fragment had empty finalized segments")
+        check(
+            merged123.gaps?[1].markerText(timeZone: shanghaiTZ) == "(10:30–10:32 会议中断未录制，缺失 2分35秒)",
+            "Second gap computes exact wall-clock range and 2m35s missing duration"
+        )
+
+        // Sub-minute same-minute gap uses HH:mm:ss so start and end never look identical ("10:12:05–10:12:40")
+        let shortGap = MeetingGap(
+            start: 100,
+            end: 135,
+            startDate: t1000.addingTimeInterval(725),
+            endDate: t1000.addingTimeInterval(760)
+        )
+        check(
+            shortGap.markerText(timeZone: shanghaiTZ) == "(10:12:05–10:12:40 会议中断未录制，缺失 35秒)",
+            "Sub-minute interruption formats HH:mm:ss wall-clock range and seconds"
+        )
+
+        // Overlapping wall-clock timestamps clamp cleanly without emitting bogus negative/zero gaps
+        var overlapB = MeetingRecord(title: "重叠片段", date: t1000.addingTimeInterval(718), source: "腾讯会议", duration: 60)
+        overlapB.segments = [MeetingSegment(start: 2, end: 8, speaker: "me", text: "紧接上一句")]
+        let (mergedOverlap, _) = try MeetingMerger.merge(records: [part1, overlapB], timeZone: shanghaiTZ)
+        check(mergedOverlap.gaps == nil && abs(mergedOverlap.segments.last!.start - 722) < 0.001, "Slightly overlapping recordings clamp monotonically without false gap markers")
+
+        // Verify JSON persistence roundtrip of merged record + SF Symbols availability
+        let mergedReloaded = try JSONDecoder().decode(MeetingRecord.self, from: JSONEncoder().encode(merged123))
+        check(mergedReloaded.gaps == merged123.gaps && mergedReloaded.mergedSourceCount == 3, "Merged gaps and source count survive JSON persistence roundtrip")
+        for sym in ["arrow.triangle.merge", "waveform.slash", "clock.arrow.circlepath"] {
+            check(NSImage(systemSymbolName: sym, accessibilityDescription: nil) != nil, "SF Symbol '\(sym)' exists on macOS")
+        }
 
         print("Meeting tests: \(checks) passed")
     }

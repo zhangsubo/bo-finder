@@ -16,6 +16,88 @@ struct MeetingAudioChunk: Codable, Equatable {
     var source: String
 }
 
+/// Unrecorded interval between two merged meeting recordings on the shared timeline.
+struct MeetingGap: Codable, Identifiable, Equatable {
+    var id: UUID = UUID()
+    var start: Double
+    var end: Double
+    var startDate: Date
+    var endDate: Date
+
+    var missingSeconds: Double {
+        max(0, end - start)
+    }
+
+    var formattedMissingDuration: String {
+        let total = max(1, Int(missingSeconds.rounded()))
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        let seconds = total % 60
+        if hours > 0 {
+            if minutes == 0 && seconds == 0 { return "\(hours)小时" }
+            if seconds == 0 { return "\(hours)小时\(minutes)分钟" }
+            return "\(hours)小时\(minutes)分\(seconds)秒"
+        }
+        if minutes > 0 {
+            if seconds == 0 { return "\(minutes)分钟" }
+            return "\(minutes)分\(seconds)秒"
+        }
+        return "\(seconds)秒"
+    }
+
+    func formattedWallClockRange(timeZone: TimeZone = .current) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        let sameDay = calendar.isDate(startDate, inSameDayAs: endDate)
+        let startHM = calendar.dateComponents([.hour, .minute], from: startDate)
+        let endHM = calendar.dateComponents([.hour, .minute], from: endDate)
+
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.timeZone = timeZone
+
+        if sameDay {
+            let needsSeconds = (startHM.hour == endHM.hour && startHM.minute == endHM.minute)
+                || Int(missingSeconds.rounded()) < 60
+            formatter.dateFormat = needsSeconds ? "HH:mm:ss" : "HH:mm"
+            return "\(formatter.string(from: startDate))–\(formatter.string(from: endDate))"
+        } else {
+            formatter.dateFormat = "M月d日 HH:mm"
+            return "\(formatter.string(from: startDate))–\(formatter.string(from: endDate))"
+        }
+    }
+
+    func markerText(timeZone: TimeZone = .current) -> String {
+        "(\(formattedWallClockRange(timeZone: timeZone)) 会议中断未录制，缺失 \(formattedMissingDuration))"
+    }
+}
+
+enum MeetingTimelineEntry: Identifiable, Equatable {
+    case segment(MeetingSegment)
+    case gap(MeetingGap)
+
+    var id: String {
+        switch self {
+        case .segment(let seg): return "seg-\(seg.id.uuidString)"
+        case .gap(let gap): return "gap-\(gap.id.uuidString)"
+        }
+    }
+
+    var startTime: Double {
+        switch self {
+        case .segment(let seg): return seg.start
+        case .gap(let gap): return gap.start
+        }
+    }
+
+    fileprivate var sortOrder: Int {
+        switch self {
+        case .gap: return 0
+        case .segment: return 1
+        }
+    }
+}
+
 struct MeetingSummary: Codable, Identifiable, Equatable {
     var id: UUID = UUID()
     var date: Date = Date()
@@ -130,6 +212,8 @@ struct MeetingRecord: Codable, Identifiable {
     var notes: MeetingStructuredNotes? = nil
     var speakerGuesses: [String: MeetingSpeakerGuess]? = nil
     var userRenamedTitle: Bool? = nil
+    var gaps: [MeetingGap]? = nil
+    var mergedSourceCount: Int? = nil
 
     /// Marks final summary generation as failed while keeping any mid-meeting live notes intact.
     mutating func applyFinalSummaryFailure(_ message: String) {
@@ -185,10 +269,33 @@ struct MeetingRecord: Codable, Identifiable {
         return "说话人 \(key)"
     }
 
-    var transcript: String {
-        segments.map {
-            "[\($0.id.uuidString)] [\(Self.timestamp($0.start))–\(Self.timestamp($0.end))] \(speakerName($0.speaker))：\($0.text)"
+    func timelineEntries(usingPreviewFallback: Bool = false) -> [MeetingTimelineEntry] {
+        let effectiveSegments = (!segments.isEmpty || !usingPreviewFallback) ? segments : preview
+        var items: [MeetingTimelineEntry] = effectiveSegments.map { .segment($0) }
+        if let gaps, !gaps.isEmpty {
+            items += gaps.map { .gap($0) }
+        }
+        return items.sorted { lhs, rhs in
+            if abs(lhs.startTime - rhs.startTime) > 0.0001 {
+                return lhs.startTime < rhs.startTime
+            }
+            return lhs.sortOrder < rhs.sortOrder
+        }
+    }
+
+    func formattedTranscript(timeZone: TimeZone = .current) -> String {
+        timelineEntries().map { entry in
+            switch entry {
+            case .segment(let seg):
+                return "[\(seg.id.uuidString)] [\(Self.timestamp(seg.start))–\(Self.timestamp(seg.end))] \(speakerName(seg.speaker))：\(seg.text)"
+            case .gap(let gap):
+                return "[\(Self.timestamp(gap.start))–\(Self.timestamp(gap.end))] \(gap.markerText(timeZone: timeZone))"
+            }
         }.joined(separator: "\n")
+    }
+
+    var transcript: String {
+        formattedTranscript()
     }
 
     static func timestamp(_ seconds: Double) -> String {
@@ -202,6 +309,490 @@ struct MeetingRecord: Codable, Identifiable {
             return String(format: "%d:%02d:%02d", value / 3600, (value % 3600) / 60, value % 60)
         }
         return String(format: "%02d:%02d", value / 60, value % 60)
+    }
+}
+
+/// Chronological multi-record splicer that aligns segments, audio chunks, speaker clusters,
+/// and notes on wall-clock timestamps while marking unrecorded interruption gaps.
+enum MeetingMerger {
+    static let minimumGapSeconds: Double = 1.0
+    static let longGapWarningSeconds: Double = 4 * 3600
+
+    struct ChunkCopyInstruction: Equatable {
+        var sourceRecordID: UUID
+        var sourceFile: String
+        var destinationFile: String
+        var shiftedChunk: MeetingAudioChunk
+    }
+
+    struct PlanPart: Identifiable, Equatable {
+        var id: UUID
+        var title: String
+        var source: String
+        var startDate: Date
+        var endDate: Date
+        var offset: Double
+        var localSpan: Double
+        var segmentCount: Int
+    }
+
+    struct MergePlan: Equatable {
+        var parts: [PlanPart]
+        var boundaryGapsByPartIndex: [Int: MeetingGap]
+        var gaps: [MeetingGap]
+        var suggestedTitle: String
+        var suggestedTitleIsUserRenamed: Bool
+        var totalDuration: Double
+        var totalSegments: Int
+
+        var hasLongGapWarning: Bool {
+            gaps.contains { $0.missingSeconds > MeetingMerger.longGapWarningSeconds }
+        }
+    }
+
+    static func sortedRecords(_ records: [MeetingRecord]) -> [MeetingRecord] {
+        records.sorted {
+            if $0.date != $1.date { return $0.date < $1.date }
+            return $0.id.uuidString < $1.id.uuidString
+        }
+    }
+
+    static func localSpan(of record: MeetingRecord) -> Double {
+        let effectiveSegs = record.segments.isEmpty ? record.preview : record.segments
+        let maxChunkEnd = record.chunks.map { $0.start + $0.duration }.max() ?? 0
+        let maxSegEnd = effectiveSegs.map(\.end).max() ?? 0
+        let maxGapEnd = (record.gaps ?? []).map(\.end).max() ?? 0
+        let raw = max(record.duration, maxChunkEnd, maxSegEnd, maxGapEnd)
+        return raw.isFinite && raw > 0 ? raw : 0
+    }
+
+    static func plan(records: [MeetingRecord]) -> MergePlan {
+        let sorted = sortedRecords(records)
+        guard let first = sorted.first else {
+            return MergePlan(
+                parts: [],
+                boundaryGapsByPartIndex: [:],
+                gaps: [],
+                suggestedTitle: "",
+                suggestedTitleIsUserRenamed: false,
+                totalDuration: 0,
+                totalSegments: 0
+            )
+        }
+
+        let baseDate = first.date
+        var cursorEnd: Double = 0
+        var parts: [PlanPart] = []
+        var boundaryGaps: [Int: MeetingGap] = [:]
+        var allGaps: [MeetingGap] = []
+        var totalSegs = 0
+
+        for (idx, rec) in sorted.enumerated() {
+            let span = localSpan(of: rec)
+            let rawOffset = idx == 0 ? 0 : rec.date.timeIntervalSince(baseDate)
+            let offset = idx == 0 ? 0 : max(cursorEnd, rawOffset)
+
+            if idx > 0 {
+                let missing = rawOffset - cursorEnd
+                if missing >= minimumGapSeconds {
+                    let gap = MeetingGap(
+                        start: cursorEnd,
+                        end: offset,
+                        startDate: baseDate.addingTimeInterval(cursorEnd),
+                        endDate: rec.date
+                    )
+                    boundaryGaps[idx] = gap
+                    allGaps.append(gap)
+                }
+            }
+
+            if let existingGaps = rec.gaps {
+                for g in existingGaps {
+                    allGaps.append(MeetingGap(
+                        id: g.id,
+                        start: g.start + offset,
+                        end: g.end + offset,
+                        startDate: g.startDate,
+                        endDate: g.endDate
+                    ))
+                }
+            }
+
+            let segCount = (rec.segments.isEmpty ? rec.preview : rec.segments).count
+            totalSegs += segCount
+            parts.append(PlanPart(
+                id: rec.id,
+                title: rec.title,
+                source: rec.source,
+                startDate: rec.date,
+                endDate: rec.date.addingTimeInterval(span),
+                offset: offset,
+                localSpan: span,
+                segmentCount: segCount
+            ))
+            cursorEnd = max(cursorEnd, offset + span)
+        }
+
+        allGaps.sort { $0.start < $1.start }
+
+        let suggestedTitle: String
+        let suggestedUserRenamed: Bool
+        if let renamed = sorted.first(where: { $0.userRenamedTitle == true }) {
+            suggestedTitle = renamed.title
+            suggestedUserRenamed = true
+        } else if let autoTitled = sorted.first(where: { !($0.notes?.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) {
+            suggestedTitle = autoTitled.title
+            suggestedUserRenamed = false
+        } else {
+            suggestedTitle = first.title
+            suggestedUserRenamed = false
+        }
+
+        return MergePlan(
+            parts: parts,
+            boundaryGapsByPartIndex: boundaryGaps,
+            gaps: allGaps,
+            suggestedTitle: suggestedTitle,
+            suggestedTitleIsUserRenamed: suggestedUserRenamed,
+            totalDuration: cursorEnd,
+            totalSegments: totalSegs
+        )
+    }
+
+    static func merge(
+        records: [MeetingRecord],
+        customTitle: String? = nil,
+        mergedID: UUID = UUID(),
+        timeZone: TimeZone = .current
+    ) throws -> (record: MeetingRecord, chunkCopies: [ChunkCopyInstruction]) {
+        guard records.count >= 2 else {
+            throw MeetingFailure.message("请至少选择两条会议记录进行合并。")
+        }
+
+        let sorted = sortedRecords(records)
+        let mergePlan = plan(records: sorted)
+
+        // Combine unique sources in chronological order
+        var seenSources = Set<String>()
+        var orderedSources: [String] = []
+        for rec in sorted {
+            let s = rec.source.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !s.isEmpty, seenSources.insert(s).inserted {
+                orderedSources.append(s)
+            }
+        }
+        let combinedSource = orderedSources.isEmpty ? "合并会议" : orderedSources.joined(separator: " + ")
+
+        let trimmedCustom = customTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let resolvedTitle = trimmedCustom.isEmpty ? mergePlan.suggestedTitle : trimmedCustom
+        let resolvedUserRenamed: Bool? = (!trimmedCustom.isEmpty && trimmedCustom != mergePlan.suggestedTitle)
+            ? true
+            : (mergePlan.suggestedTitleIsUserRenamed ? true : nil)
+
+        var chunkCopies: [ChunkCopyInstruction] = []
+        var mergedChunks: [MeetingAudioChunk] = []
+        var mergedSegments: [MeetingSegment] = []
+        var usedSegmentIDs = Set<UUID>()
+
+        var mergedSpeakerNames: [String: String] = [:]
+        var mergedSpeakerGuesses: [String: MeetingSpeakerGuess] = [:]
+        // Maps explicit non-empty human name -> (mergedSpeakerKey, mergedVoiceID) so identical named speakers unify across parts
+        var explicitKeyByName: [String: (key: String, voiceID: Int?)] = [:]
+        var nextVoiceID = 0
+        var usedCustomKeys = Set<String>()
+
+        for (partIdx, rec) in sorted.enumerated() {
+            let offset = mergePlan.parts[partIdx].offset
+
+            // 1. Shift audio chunks onto the unified meeting timeline
+            for chunk in rec.chunks {
+                let shiftedStart = chunk.start + offset
+                let destName = "\(chunk.source)-\(Int((shiftedStart * 1000).rounded()))-\(UUID().uuidString).wav"
+                let shifted = MeetingAudioChunk(
+                    file: destName,
+                    start: shiftedStart,
+                    duration: chunk.duration,
+                    source: chunk.source
+                )
+                chunkCopies.append(ChunkCopyInstruction(
+                    sourceRecordID: rec.id,
+                    sourceFile: chunk.file,
+                    destinationFile: destName,
+                    shiftedChunk: shifted
+                ))
+                mergedChunks.append(shifted)
+            }
+
+            // 2. Remap session-local speaker clusters to avoid conflating independent v0/v1 voice IDs across sessions
+            var localSpeakerMap: [String: (key: String, voiceID: Int?)] = [:]
+            func mapSpeaker(rawSpeaker: String, rawVoiceID: Int?) -> (key: String, voiceID: Int?) {
+                let parsedVoice = rawVoiceID ?? (rawSpeaker.hasPrefix("v") ? Int(rawSpeaker.dropFirst()) : nil)
+                let origKey = parsedVoice.map { "v\($0)" } ?? rawSpeaker
+
+                if origKey == "me" || origKey == "them" || origKey == "?" {
+                    if let explicit = rec.speakerNames[origKey], !explicit.isEmpty, mergedSpeakerNames[origKey] == nil {
+                        mergedSpeakerNames[origKey] = explicit
+                    }
+                    return (origKey, nil)
+                }
+
+                if let cached = localSpeakerMap[origKey] {
+                    return cached
+                }
+
+                let explicitName = rec.speakerNames[origKey]?.trimmingCharacters(in: .whitespacesAndNewlines)
+                if let explicitName, !explicitName.isEmpty, let existing = explicitKeyByName[explicitName] {
+                    localSpeakerMap[origKey] = existing
+                    return existing
+                }
+
+                let mapped: (key: String, voiceID: Int?)
+                if parsedVoice != nil {
+                    let v = nextVoiceID
+                    nextVoiceID += 1
+                    mapped = ("v\(v)", v)
+                } else {
+                    var candidate = origKey
+                    if usedCustomKeys.contains(candidate) {
+                        var suffix = 2
+                        while usedCustomKeys.contains("\(origKey)_\(suffix)") { suffix += 1 }
+                        candidate = "\(origKey)_\(suffix)"
+                    }
+                    usedCustomKeys.insert(candidate)
+                    mapped = (candidate, nil)
+                }
+
+                localSpeakerMap[origKey] = mapped
+                if let explicitRaw = rec.speakerNames[origKey] {
+                    mergedSpeakerNames[mapped.key] = explicitRaw
+                    let trimmed = explicitRaw.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !trimmed.isEmpty {
+                        explicitKeyByName[trimmed] = mapped
+                    }
+                }
+                if var guess = rec.speakerGuesses?[origKey] {
+                    guess.evidence = shiftGuessEvidence(guess.evidence, by: offset)
+                    mergedSpeakerGuesses[mapped.key] = guess
+                }
+                return mapped
+            }
+
+            let sourceSegments = rec.segments.isEmpty ? rec.preview : rec.segments
+            for seg in sourceSegments {
+                let mapped = mapSpeaker(rawSpeaker: seg.speaker, rawVoiceID: seg.voiceID)
+                let segID = usedSegmentIDs.insert(seg.id).inserted ? seg.id : UUID()
+                mergedSegments.append(MeetingSegment(
+                    id: segID,
+                    start: seg.start + offset,
+                    end: seg.end + offset,
+                    speaker: mapped.key,
+                    text: seg.text,
+                    voiceID: mapped.voiceID
+                ))
+            }
+        }
+
+        mergedChunks.sort { $0.start < $1.start }
+        mergedSegments.sort { $0.start < $1.start }
+
+        // 3. Immediately stitch existing structured notes & plain summaries with gap markers
+        let stitchedNotes = stitchStructuredNotes(sorted: sorted, plan: mergePlan, timeZone: timeZone)
+        let stitchedSummaries = stitchPlainSummaries(
+            sorted: sorted,
+            plan: mergePlan,
+            hasStructuredNotes: stitchedNotes != nil,
+            timeZone: timeZone
+        )
+
+        let totalMergedSources = sorted.reduce(0) { $0 + max(1, $1.mergedSourceCount ?? 1) }
+
+        var merged = MeetingRecord(
+            id: mergedID,
+            title: resolvedTitle,
+            date: sorted[0].date,
+            source: combinedSource,
+            duration: mergePlan.totalDuration,
+            phase: "ended",
+            transcriptState: mergedSegments.isEmpty ? "waiting" : "ready",
+            summaryState: (stitchedNotes != nil || !stitchedSummaries.isEmpty) ? "ready" : "waiting",
+            issue: (mergedSegments.isEmpty && !mergedChunks.isEmpty) ? "合并记录包含未转写音频，可点击下方按钮进行转录。" : "",
+            chunks: mergedChunks,
+            segments: mergedSegments,
+            preview: [],
+            speakerNames: mergedSpeakerNames,
+            revision: 1,
+            summaries: stitchedSummaries,
+            notes: stitchedNotes,
+            speakerGuesses: mergedSpeakerGuesses.isEmpty ? nil : mergedSpeakerGuesses,
+            userRenamedTitle: resolvedUserRenamed,
+            gaps: mergePlan.gaps.isEmpty ? nil : mergePlan.gaps,
+            mergedSourceCount: totalMergedSources
+        )
+        if merged.duration < (mergedSegments.last?.end ?? 0) {
+            merged.duration = mergedSegments.last?.end ?? merged.duration
+        }
+        return (merged, chunkCopies)
+    }
+
+    private static func shiftGuessEvidence(_ evidence: String, by offset: Double) -> String {
+        guard offset > 0, let open = evidence.firstIndex(of: "“") else { return evidence }
+        let clock = evidence[..<open].trimmingCharacters(in: .whitespaces)
+        let tokens = clock.split(separator: ":").compactMap { Int($0) }
+        let baseSeconds: Double?
+        if tokens.count == 2 {
+            baseSeconds = Double(tokens[0] * 60 + tokens[1])
+        } else if tokens.count == 3 {
+            baseSeconds = Double(tokens[0] * 3600 + tokens[1] * 60 + tokens[2])
+        } else {
+            baseSeconds = nil
+        }
+        guard let baseSeconds else { return evidence }
+        return "\(MeetingRecord.shortClock(baseSeconds + offset)) \(evidence[open...])"
+    }
+
+    private static func stitchStructuredNotes(
+        sorted: [MeetingRecord],
+        plan: MergePlan,
+        timeZone: TimeZone
+    ) -> MeetingStructuredNotes? {
+        guard sorted.contains(where: { $0.notes?.isEmpty == false }) else {
+            return nil
+        }
+
+        var out = MeetingStructuredNotes()
+        out.title = sorted.compactMap { $0.notes?.title?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty }
+
+        var summaryPieces: [String] = []
+        var coveredTotal = 0
+
+        for (idx, rec) in sorted.enumerated() {
+            if let gap = plan.boundaryGapsByPartIndex[idx] {
+                summaryPieces.append(gap.markerText(timeZone: timeZone))
+            }
+            guard let notes = rec.notes, !notes.isEmpty else { continue }
+            let offset = plan.parts[idx].offset
+            let partSegCount = plan.parts[idx].segmentCount
+            coveredTotal += min(max(0, notes.coveredCount), partSegCount)
+
+            let trimmedSummary = notes.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedSummary.isEmpty {
+                summaryPieces.append(trimmedSummary)
+            }
+
+            for topic in notes.topics {
+                var shiftedTopic = topic
+                shiftedTopic.start += offset
+                shiftedTopic.pointTimes = topic.pointTimes?.map { $0.map { $0 + offset } }
+                if var fb = topic.fishbone {
+                    fb.branches = fb.branches.map { branch in
+                        var b = branch
+                        b.t = b.t.map { $0 + offset }
+                        return b
+                    }
+                    shiftedTopic.fishbone = fb
+                }
+                out.topics.append(shiftedTopic)
+            }
+
+            for item in notes.conclusions {
+                var shifted = item
+                shifted.t = item.t.map { $0 + offset }
+                if let existingIdx = out.conclusions.firstIndex(where: { $0.text == shifted.text }) {
+                    out.conclusions[existingIdx].support = max(out.conclusions[existingIdx].support, shifted.support)
+                    out.conclusions[existingIdx].t = [out.conclusions[existingIdx].t, shifted.t].compactMap { $0 }.min()
+                } else {
+                    out.conclusions.append(shifted)
+                }
+            }
+
+            for item in notes.todos {
+                var shifted = item
+                shifted.t = item.t.map { $0 + offset }
+                if let existingIdx = out.todos.firstIndex(where: { $0.text == shifted.text }) {
+                    out.todos[existingIdx].support = max(out.todos[existingIdx].support, shifted.support)
+                    out.todos[existingIdx].t = [out.todos[existingIdx].t, shifted.t].compactMap { $0 }.min()
+                    if out.todos[existingIdx].owner == nil {
+                        out.todos[existingIdx].owner = shifted.owner
+                    }
+                } else {
+                    out.todos.append(shifted)
+                }
+            }
+
+            for term in notes.terms {
+                if let existingIdx = out.terms.firstIndex(where: { $0.name.caseInsensitiveCompare(term.name) == .orderedSame }) {
+                    if out.terms[existingIdx].note.isEmpty && !term.note.isEmpty {
+                        out.terms[existingIdx].note = term.note
+                    }
+                    for h in term.heard where !out.terms[existingIdx].heard.contains(h) {
+                        out.terms[existingIdx].heard.append(h)
+                    }
+                } else {
+                    out.terms.append(term)
+                }
+            }
+        }
+
+        out.summary = summaryPieces.joined(separator: " ")
+        for gap in plan.gaps {
+            let rangeText = gap.formattedWallClockRange(timeZone: timeZone)
+            if !out.summary.contains(rangeText) {
+                let marker = gap.markerText(timeZone: timeZone)
+                out.summary = out.summary.isEmpty ? marker : "\(out.summary) \(marker)"
+            }
+        }
+        out.topics.sort { $0.start < $1.start }
+        if out.terms.count > 20 {
+            out.terms = Array(MeetingNoteTerm.ordered(out.terms).prefix(20))
+        }
+        out.coveredCount = coveredTotal
+        out.updatedAt = Date()
+        out.isFinal = false
+        out.transcriptRevision = 0
+        return out.isEmpty ? nil : out
+    }
+
+    private static func stitchPlainSummaries(
+        sorted: [MeetingRecord],
+        plan: MergePlan,
+        hasStructuredNotes: Bool,
+        timeZone: TimeZone
+    ) -> [MeetingSummary] {
+        guard !hasStructuredNotes, sorted.contains(where: { !$0.summaries.isEmpty }) else {
+            return []
+        }
+        var blocks: [String] = []
+        var latestModel = "合并纪要"
+        var latestTemplate = ""
+        for (idx, rec) in sorted.enumerated() {
+            if let gap = plan.boundaryGapsByPartIndex[idx] {
+                blocks.append(gap.markerText(timeZone: timeZone))
+            }
+            if let last = rec.summaries.last {
+                let trimmed = last.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    blocks.append(trimmed)
+                }
+                if !last.model.isEmpty { latestModel = last.model }
+                if !last.template.isEmpty { latestTemplate = last.template }
+            }
+        }
+        var combined = blocks.joined(separator: "\n\n")
+        for gap in plan.gaps {
+            let rangeText = gap.formattedWallClockRange(timeZone: timeZone)
+            if !combined.contains(rangeText) {
+                let marker = gap.markerText(timeZone: timeZone)
+                combined = combined.isEmpty ? marker : "\(combined)\n\n\(marker)"
+            }
+        }
+        guard !combined.isEmpty else { return [] }
+        return [MeetingSummary(
+            transcriptRevision: 0,
+            model: latestModel,
+            template: latestTemplate,
+            text: combined
+        )]
     }
 }
 

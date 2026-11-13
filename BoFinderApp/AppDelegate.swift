@@ -343,7 +343,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let quickCopyRoot = NSMenuItem(title: label, action: nil, keyEquivalent: "")
             quickCopyRoot.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: nil)
             let sub = NSMenu(title: label)
-            for format in state.config.enabledFormats {
+            for format in state.config.displayFormats {
                 let item = NSMenuItem(
                     title: format.title,
                     action: #selector(quickCopyFromMenuBar(_:)),

@@ -410,12 +410,43 @@ enum MeetingNotesParser {
         segments: [MeetingSegment],
         speakerResolver: (String) -> String,
         from: Int,
-        final: Bool
+        final: Bool,
+        gaps: [MeetingGap] = [],
+        timeZone: TimeZone = .current
     ) -> String {
         func formatLine(_ index: Int) -> String {
             let seg = segments[index]
             let who = speakerResolver(seg.speaker)
             return "[L\(index + 1) \(MeetingRecord.shortClock(seg.start)) \(who)] \(seg.text)"
+        }
+        func formatGap(_ gap: MeetingGap) -> String {
+            "[中断未录制 \(MeetingRecord.shortClock(gap.start))–\(MeetingRecord.shortClock(gap.end))] \(gap.markerText(timeZone: timeZone))"
+        }
+
+        let sortedGaps = gaps.sorted { $0.start < $1.start }
+        var gapsBeforeIndex: [Int: [MeetingGap]] = [:]
+        var trailingGaps: [MeetingGap] = []
+        for gap in sortedGaps {
+            if let idx = segments.firstIndex(where: { $0.start >= gap.end })
+                ?? segments.firstIndex(where: { $0.start > gap.start }) {
+                gapsBeforeIndex[idx, default: []].append(gap)
+            } else {
+                trailingGaps.append(gap)
+            }
+        }
+
+        func formatRange(_ range: Range<Int>, includeTrailing: Bool) -> String {
+            var lines: [String] = []
+            for idx in range {
+                if let preceding = gapsBeforeIndex[idx] {
+                    for g in preceding { lines.append(formatGap(g)) }
+                }
+                lines.append(formatLine(idx))
+            }
+            if includeTrailing {
+                for g in trailingGaps { lines.append(formatGap(g)) }
+            }
+            return lines.joined(separator: "\n")
         }
 
         var currentJSON = "{}"
@@ -438,11 +469,11 @@ enum MeetingNotesParser {
         }
         if contextStart < from {
             prompt += "前序上下文（仅供衔接参考）：\n"
-                + (contextStart..<from).map(formatLine).joined(separator: "\n") + "\n\n"
+                + formatRange(contextStart..<from, includeTrailing: false) + "\n\n"
         }
 
         prompt += "\(final && notes.isEmpty ? "完整会议转录" : "新增发言记录")（格式：[行号 时间 说话人] 内容；语音识别可能出现同音错字，请结合上下文纠正专有名词与人名）：\n"
-        prompt += (from..<segments.count).map(formatLine).joined(separator: "\n")
+        prompt += formatRange(from..<segments.count, includeTrailing: final)
 
         if final, let first = segments.first?.start, let last = segments.last?.end {
             let maxTopics = max(1, min(8, Int((last - first) / 180) + 1))
@@ -482,7 +513,27 @@ enum MeetingNotesParser {
         - 每一个议题、要点、鱼骨分支、结论、待办都必须附上真实支撑它的转录行号 evidence（如 ["L3", "L5"]），严禁编造转录未提及的事实。
         - terms 最多 10 个，优先收录被语音识别听错的人名或术语（heard 填入转录原文里出现的错误同音词，供搜索联动高亮）。
         """
+        if !sortedGaps.isEmpty {
+            let markers = sortedGaps.map { $0.markerText(timeZone: timeZone) }.joined(separator: "；")
+            prompt += "\n- 本场会议由多段录音按时间拼接，存在中断未录制时间段：\(markers)。请在 summary 中原样保留上述括号中断标记，且严禁猜测或补写未录制期间的内容。"
+        }
         return prompt
+    }
+
+    /// Ensures every unrecorded interruption marker remains visible in `notes.summary` even if an LLM omits or paraphrases it.
+    static func ensureGapMarkers(
+        in notes: inout MeetingStructuredNotes,
+        gaps: [MeetingGap],
+        timeZone: TimeZone = .current
+    ) {
+        guard !gaps.isEmpty else { return }
+        for gap in gaps.sorted(by: { $0.start < $1.start }) {
+            let rangeText = gap.formattedWallClockRange(timeZone: timeZone)
+            if !notes.summary.contains(rangeText) {
+                let marker = gap.markerText(timeZone: timeZone)
+                notes.summary = notes.summary.isEmpty ? marker : "\(notes.summary) \(marker)"
+            }
+        }
     }
 
     /// Formats a clean auto-title such as "11月3日 产品发布评审" when the user has not manually renamed the meeting.
@@ -503,13 +554,35 @@ enum MeetingDocumentExport {
         return "\(record.source) · \(record.date.formatted(date: .abbreviated, time: .shortened)) · 约 \(mins) 分钟"
     }
 
-    static func notesMarkdown(_ notes: MeetingStructuredNotes?) -> String {
+    static func notesMarkdown(
+        _ notes: MeetingStructuredNotes?,
+        gaps: [MeetingGap] = [],
+        timeZone: TimeZone = .current
+    ) -> String {
         guard let notes, !notes.isEmpty else { return "" }
+        let sortedGaps = gaps.sorted { $0.start < $1.start }
+        var emittedGapIDs = Set<UUID>()
+        func gapMarkdown(_ gap: MeetingGap) -> String {
+            "> **[\(MeetingRecord.shortClock(gap.start))–\(MeetingRecord.shortClock(gap.end))]** \(gap.markerText(timeZone: timeZone))\n\n"
+        }
+
         var out = "## 会议纪要\n\n"
-        if !notes.summary.isEmpty {
-            out += "\(notes.summary)\n\n"
+        var summaryText = notes.summary
+        for gap in sortedGaps {
+            let rangeText = gap.formattedWallClockRange(timeZone: timeZone)
+            if !summaryText.contains(rangeText) {
+                let marker = gap.markerText(timeZone: timeZone)
+                summaryText = summaryText.isEmpty ? marker : "\(summaryText) \(marker)"
+            }
+        }
+        if !summaryText.isEmpty {
+            out += "\(summaryText)\n\n"
         }
         for topic in notes.topics {
+            for gap in sortedGaps where !emittedGapIDs.contains(gap.id) && gap.start <= topic.start {
+                emittedGapIDs.insert(gap.id)
+                out += gapMarkdown(gap)
+            }
             out += "### \(MeetingRecord.shortClock(topic.start)) \(topic.title)\n\n"
             if !topic.summary.isEmpty {
                 out += "\(topic.summary)\n\n"
@@ -524,6 +597,10 @@ enum MeetingDocumentExport {
                 }
             }
             out += "\n"
+        }
+        for gap in sortedGaps where !emittedGapIDs.contains(gap.id) {
+            emittedGapIDs.insert(gap.id)
+            out += gapMarkdown(gap)
         }
         if !notes.conclusions.isEmpty {
             out += "### 结论\n\n"
@@ -553,25 +630,46 @@ enum MeetingDocumentExport {
         return out
     }
 
-    static func markdown(for record: MeetingRecord, includeTranscript: Bool = true) -> String {
+    static func markdown(
+        for record: MeetingRecord,
+        includeTranscript: Bool = true,
+        timeZone: TimeZone = .current
+    ) -> String {
+        let gaps = (record.gaps ?? []).sorted { $0.start < $1.start }
         var out = "# \(record.title)\n\n\(header(record))\n\n"
-        let structured = notesMarkdown(record.notes)
+        let structured = notesMarkdown(record.notes, gaps: gaps, timeZone: timeZone)
         if !structured.isEmpty {
             out += structured
         } else if let summary = record.summaries.last {
-            out += "## 会议纪要\n\n\(summary.text)\n\n"
+            var summaryBody = summary.text
+            for gap in gaps where !summaryBody.contains(gap.formattedWallClockRange(timeZone: timeZone)) {
+                summaryBody += "\n\n\(gap.markerText(timeZone: timeZone))"
+            }
+            out += "## 会议纪要\n\n\(summaryBody)\n\n"
+        } else if !gaps.isEmpty {
+            out += "## 会议纪要\n\n"
+            for gap in gaps {
+                out += "> **[\(MeetingRecord.shortClock(gap.start))–\(MeetingRecord.shortClock(gap.end))]** \(gap.markerText(timeZone: timeZone))\n\n"
+            }
         }
-        if includeTranscript, !record.segments.isEmpty {
+        let entries = record.timelineEntries()
+        if includeTranscript, !entries.isEmpty {
             out += "## 完整文字记录\n\n"
-            for seg in record.segments {
-                out += "**[\(MeetingRecord.shortClock(seg.start))] \(record.speakerName(seg.speaker))**  \n\(seg.text)\n\n"
+            for entry in entries {
+                switch entry {
+                case .segment(let seg):
+                    out += "**[\(MeetingRecord.shortClock(seg.start))] \(record.speakerName(seg.speaker))**  \n\(seg.text)\n\n"
+                case .gap(let gap):
+                    out += "> **[\(MeetingRecord.shortClock(gap.start))–\(MeetingRecord.shortClock(gap.end))]** \(gap.markerText(timeZone: timeZone))\n\n"
+                }
             }
         }
         return out
     }
 
-    static func docx(for record: MeetingRecord) throws -> Data {
+    static func docx(for record: MeetingRecord, timeZone: TimeZone = .current) throws -> Data {
         let doc = NSMutableAttributedString()
+        let gapColor = NSColor(calibratedRed: 0.78, green: 0.36, blue: 0.04, alpha: 1.0)
         func add(
             _ text: String,
             size: CGFloat,
@@ -589,15 +687,26 @@ enum MeetingDocumentExport {
             ]))
         }
 
+        let gaps = (record.gaps ?? []).sorted { $0.start < $1.start }
         add(record.title, size: 20, weight: .bold, after: 6)
         add(header(record), size: 10, color: .darkGray, after: 14)
 
         if let notes = record.notes, !notes.isEmpty {
+            var emittedGapIDs = Set<UUID>()
             add("会议纪要", size: 15, weight: .bold, after: 6)
-            if !notes.summary.isEmpty {
-                add(notes.summary, size: 11, after: 10)
+            var summaryText = notes.summary
+            for gap in gaps where !summaryText.contains(gap.formattedWallClockRange(timeZone: timeZone)) {
+                let marker = gap.markerText(timeZone: timeZone)
+                summaryText = summaryText.isEmpty ? marker : "\(summaryText) \(marker)"
+            }
+            if !summaryText.isEmpty {
+                add(summaryText, size: 11, after: 10)
             }
             for topic in notes.topics {
+                for gap in gaps where !emittedGapIDs.contains(gap.id) && gap.start <= topic.start {
+                    emittedGapIDs.insert(gap.id)
+                    add("[\(MeetingRecord.shortClock(gap.start))–\(MeetingRecord.shortClock(gap.end))] \(gap.markerText(timeZone: timeZone))", size: 10.5, weight: .semibold, color: gapColor, after: 6)
+                }
                 add("\(MeetingRecord.shortClock(topic.start))  \(topic.title)", size: 12, weight: .semibold, after: 3)
                 if !topic.summary.isEmpty {
                     add(topic.summary, size: 11, color: .darkGray, after: 3)
@@ -612,6 +721,10 @@ enum MeetingDocumentExport {
                     }
                 }
                 add("", size: 6, after: 4)
+            }
+            for gap in gaps where !emittedGapIDs.contains(gap.id) {
+                emittedGapIDs.insert(gap.id)
+                add("[\(MeetingRecord.shortClock(gap.start))–\(MeetingRecord.shortClock(gap.end))] \(gap.markerText(timeZone: timeZone))", size: 10.5, weight: .semibold, color: gapColor, after: 6)
             }
             if !notes.conclusions.isEmpty {
                 add("结论", size: 12, weight: .semibold, after: 3)
@@ -635,14 +748,29 @@ enum MeetingDocumentExport {
             }
         } else if let summary = record.summaries.last {
             add("会议纪要", size: 15, weight: .bold, after: 6)
-            add(summary.text, size: 11, after: 12)
+            var summaryBody = summary.text
+            for gap in gaps where !summaryBody.contains(gap.formattedWallClockRange(timeZone: timeZone)) {
+                summaryBody += "\n\n\(gap.markerText(timeZone: timeZone))"
+            }
+            add(summaryBody, size: 11, after: 12)
+        } else if !gaps.isEmpty {
+            add("会议纪要", size: 15, weight: .bold, after: 6)
+            for gap in gaps {
+                add("[\(MeetingRecord.shortClock(gap.start))–\(MeetingRecord.shortClock(gap.end))] \(gap.markerText(timeZone: timeZone))", size: 10.5, weight: .semibold, color: gapColor, after: 6)
+            }
         }
 
-        if !record.segments.isEmpty {
+        let entries = record.timelineEntries()
+        if !entries.isEmpty {
             add("完整文字记录", size: 15, weight: .bold, after: 8)
-            for seg in record.segments {
-                add("[\(MeetingRecord.shortClock(seg.start))] \(record.speakerName(seg.speaker))", size: 9, weight: .semibold, color: .darkGray, after: 2)
-                add(seg.text, size: 11, after: 6)
+            for entry in entries {
+                switch entry {
+                case .segment(let seg):
+                    add("[\(MeetingRecord.shortClock(seg.start))] \(record.speakerName(seg.speaker))", size: 9, weight: .semibold, color: .darkGray, after: 2)
+                    add(seg.text, size: 11, after: 6)
+                case .gap(let gap):
+                    add("[\(MeetingRecord.shortClock(gap.start))–\(MeetingRecord.shortClock(gap.end))] \(gap.markerText(timeZone: timeZone))", size: 10, weight: .semibold, color: gapColor, after: 6)
+                }
             }
         }
 
@@ -833,6 +961,7 @@ final class MeetingNotesEngine: ObservableObject {
             return MeetingNotesParser.parse(retryReply, times: sliceTimes, startedAt: startedAt)
         }
 
+        let recordGaps = record.gaps ?? []
         do {
             var nextNotes: MeetingStructuredNotes?
             if final && (segments.count > 180 || totalChars > 14_000) {
@@ -849,7 +978,8 @@ final class MeetingNotesEngine: ObservableObject {
                         segments: slice,
                         speakerResolver: { record.speakerName($0) },
                         from: cursor,
-                        final: end == segments.count
+                        final: end == segments.count,
+                        gaps: recordGaps
                     )
                     if var parsed = try await requestParsedNotes(
                         prompt: prompt,
@@ -870,7 +1000,8 @@ final class MeetingNotesEngine: ObservableObject {
                     segments: segments,
                     speakerResolver: { record.speakerName($0) },
                     from: from,
-                    final: final
+                    final: final,
+                    gaps: recordGaps
                 )
                 nextNotes = try await requestParsedNotes(prompt: prompt, sliceTimes: times, isFinalCall: final)
             }
@@ -894,6 +1025,7 @@ final class MeetingNotesEngine: ObservableObject {
             }
 
             MeetingNotesParser.carryTimes(from: oldNotes, into: &resolved)
+            MeetingNotesParser.ensureGapMarkers(in: &resolved, gaps: recordGaps)
             if resolved.title == nil { resolved.title = oldNotes.title }
             resolved.coveredCount = segments.count
             resolved.updatedAt = Date()
