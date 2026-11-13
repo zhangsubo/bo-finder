@@ -24,11 +24,16 @@ final class GatewayManager: ObservableObject {
     @Published private(set) var detectedMitmproxyPath: String? = nil
     @Published private(set) var isGitHookMounted: Bool = false
     @Published private(set) var isCACertTrusted: Bool = false
+    @Published private(set) var agentRuleTargets: [GatewayAgentRuleFileTarget] = []
 
     @Published var showMitmproxyConsentSheet: Bool = false
     @Published var showSurgeGuideSheet: Bool = false
+    @Published var showAgentRulesManualSheet: Bool = false
+    @Published var agentRulesSheetIsMissingPrompt: Bool = false
     @Published var statusBanner: String = ""
     @Published var errorMessage: String = ""
+
+    private var pendingAgentRulesManualSheet: Bool = false
 
     // MARK: - Paths
 
@@ -329,6 +334,10 @@ final class GatewayManager: ObservableObject {
                     self.startStatusPolling()
                     self.isBusy = false
                     self.statusBanner = "安全网关运行中 · \(self.prefs.selectedTier.shortBadge)"
+
+                    if self.prefs.autoSyncAgentRulesMD {
+                        self.syncGlobalAgentInstructionFiles(promptIfMissing: showHUD, showSuccessHUD: false)
+                    }
 
                     if showHUD && self.prefs.showHUDNotifications {
                         HUDWindowController.shared.show(
@@ -792,6 +801,106 @@ final class GatewayManager: ObservableObject {
         syncClaudeAgentHook(enabled: enabled)
     }
 
+    func setAutoSyncAgentRulesMD(_ enabled: Bool) {
+        prefs.autoSyncAgentRulesMD = enabled
+        savePreferencesToDisk()
+        if enabled && prefs.isEnabled {
+            syncGlobalAgentInstructionFiles(promptIfMissing: true, showSuccessHUD: true)
+        } else {
+            refreshEnvironmentCapabilities()
+        }
+    }
+
+    @discardableResult
+    func syncGlobalAgentInstructionFiles(promptIfMissing: Bool, showSuccessHUD: Bool) -> GatewayAgentRulesSyncOutcome {
+        let outcome = GatewayAgentRulesSyncer.syncExistingFiles(homeDirectory: homeDirectory)
+        agentRuleTargets = outcome.targets
+
+        if !outcome.foundAnyGlobalFile {
+            statusBanner = "未检测到全局 CLAUDE.md 或 AGENTS.md，请手动写入安全网关协作规范"
+            if promptIfMissing {
+                openAgentRulesSheet(missingPrompt: true)
+            }
+            return outcome
+        }
+
+        if !outcome.failedPaths.isEmpty {
+            errorMessage = "部分全局 Agent 规则文件写入失败：\(outcome.failedPaths.joined(separator: ", "))"
+        }
+
+        if !outcome.newlySyncedPaths.isEmpty {
+            let joined = outcome.newlySyncedPaths.joined(separator: "、")
+            statusBanner = "已向全局 Agent 文档追加白名单预检规范：\(joined)"
+            if showSuccessHUD && prefs.showHUDNotifications {
+                HUDWindowController.shared.show(
+                    title: "已同步全局 Agent 规范",
+                    subtitle: joined,
+                    symbolName: "doc.badge.gearshape.fill"
+                )
+            }
+        } else if showSuccessHUD {
+            let joined = outcome.alreadySyncedPaths.joined(separator: "、")
+            statusBanner = "全局 Agent 规范已是最新（\(joined)）"
+            if prefs.showHUDNotifications {
+                HUDWindowController.shared.show(
+                    title: "全局 Agent 规范已就绪",
+                    subtitle: joined,
+                    symbolName: "checkmark.circle.fill"
+                )
+            }
+        }
+
+        return outcome
+    }
+
+    func removeGlobalAgentInstructionBlock() {
+        let removed = GatewayAgentRulesSyncer.removeFromExistingFiles(homeDirectory: homeDirectory)
+        refreshEnvironmentCapabilities()
+        if removed > 0 {
+            statusBanner = "已从 \(removed) 个全局 Agent 文档中移除安全网关规范区块"
+            if prefs.showHUDNotifications {
+                HUDWindowController.shared.show(
+                    title: "已移除全局 Agent 规范区块",
+                    subtitle: "共清理 \(removed) 个全局规则文件",
+                    symbolName: "trash"
+                )
+            }
+        }
+    }
+
+    func openAgentRulesSheet(missingPrompt: Bool) {
+        agentRulesSheetIsMissingPrompt = missingPrompt
+        if showSurgeGuideSheet || showMitmproxyConsentSheet {
+            pendingAgentRulesManualSheet = true
+            return
+        }
+        if !SettingsWindowController.shared.isWindowVisible {
+            SettingsWindowController.shared.showWindow(page: "gateway")
+        }
+        showAgentRulesManualSheet = true
+    }
+
+    func presentDeferredAgentRulesSheetIfNeeded() {
+        guard pendingAgentRulesManualSheet else { return }
+        pendingAgentRulesManualSheet = false
+        DispatchQueue.main.async {
+            self.showAgentRulesManualSheet = true
+        }
+    }
+
+    func copyAgentRulesMarkdownToClipboard() {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(GatewayAgentRulesSyncer.renderManagedBlock(), forType: .string)
+        if prefs.showHUDNotifications {
+            HUDWindowController.shared.show(
+                title: "已复制 Agent 协作规范",
+                subtitle: "可直接粘贴至您的全局 CLAUDE.md 或 AGENTS.md",
+                symbolName: "doc.on.doc.fill"
+            )
+        }
+    }
+
     private func syncClaudeAgentHook(enabled: Bool) {
         guard let guardBin = resolveGuardBinaryURL()?.path else { return }
         let claudeDir = URL(fileURLWithPath: homeDirectory, isDirectory: true).appendingPathComponent(".claude", isDirectory: true)
@@ -1069,11 +1178,14 @@ final class GatewayManager: ObservableObject {
             caTrusted = (verifyProc.terminationStatus == 0)
         }
 
+        let discoveredAgentTargets = GatewayAgentRulesSyncer.discoverTargets(homeDirectory: homeDirectory, fileManager: fm)
+
         let assign = {
             self.hasSurgeInstalled = surgeExists
             self.detectedMitmproxyPath = mitmPath
             self.isGitHookMounted = gitMounted
             self.isCACertTrusted = caTrusted
+            self.agentRuleTargets = discoveredAgentTargets
         }
         if Thread.isMainThread {
             assign()
