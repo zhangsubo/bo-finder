@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform: macOS 26+](https://img.shields.io/badge/Platform-macOS%2026%2B-lightgrey.svg)]()
 
-`DeskSide` 是一款运行在个人 Mac 上的原生工具箱（SwiftUI + AppKit），由 BoFinder 演进而来，沿用原有 logo。现已内置文件工具、环境变量维护与零 Python 依赖的本地实时会议助手；安全网关仍为占位。
+`DeskSide` 是一款运行在个人 Mac 上的原生工具箱（SwiftUI + AppKit），由 BoFinder 演进而来，沿用原有 logo。现已内置文件工具、环境变量维护与零 Python 依赖的本地实时会议助手；安全网关定位为「防止向大模型发送与向 GitHub 推送密钥及敏感凭证」的本地双出口守护控制台（详见 [安全网关设计文档](docs/security-gateway-design.md)）。
 
 主窗口采用固定全局侧边栏，「设置与关于」在所有页面均可访问。菜单栏常驻，关闭窗口后继续运行，支持隐藏 Dock 图标、开机启动和跟随系统／浅色／深色外观。
 
@@ -60,6 +60,16 @@ build/benchmark_apple_speech --audio /path/to/fixture.wav --realtime
 
 会议音频与纪要默认保存在 `~/Library/Application Support/DeskSide/Meetings/`。默认本地转录不上传任何音频；配置纪要接口后仅向你指定的端点发送会议文字转录。
 
+## 安全网关（即将推出）
+
+- **双出口密钥防泄漏定位**：聚焦个人 AI 辅助研发场景，统一拦截**发往外部大模型（Claude Code、Codex、Cursor 等）的上下文流量**与**推送至 GitHub（`git push` SSH/HTTPS、`gh` CLI、GitHub MCP）的代码及接口流量**中夹带的真实密钥与敏感凭证。
+- **同仓解耦 Go 引擎 + DeskSide 原生管控**：核心流式检测与代理引擎以独立 Go 模块（`GuardEngine/`，`CGO_ENABLED=0` 零外部依赖）放在本仓库内开发，随 `DeskSide.app` 一键编译、签名与自动热更新，同时保持纯标准协议边界，后续随时可零改造单独拆分为跨平台 CLI 项目；`DeskSide` 负责可视化策略管理、零明文掩码审计、桌面 HUD 实时提醒，并直接联动「环境变量维护」中的已知密码密钥库实现零误报精确匹配。
+- **三级递进流量接入（Surge → `mitmproxy` 透明捕获 → 自带代理兜底）**：
+  - **Tier 1**：检测到本机已安装 **Surge** 时，直接使用 Surge 协同模式（生成 `.sgmodule` 复用 Surge MITM 根证书与海外代理分流，Header 级无缓冲引流，不断流大模型 SSE 输出）；
+  - **Tier 2**：未检测到 Surge 时，优先提示用户是否同意自动下载并集成带 Apple 官方签名的开源 **`mitmproxy` 本地透明捕获组件**（MIT 协议，基于 macOS `NetworkExtension` 按进程精准拦截，保持无盲区防护）；
+  - **Tier 3**：仅当用户不同意下载外部组件时，降级使用独立引擎**自带的本地选择性 MITM 代理 + 系统 PAC 分流 + 终端环境注入**完成基础防护。
+- 详细方案与技术选型对比见 [docs/security-gateway-design.md](docs/security-gateway-design.md)。
+
 ## 文件工具
 
 ## 核心特性
@@ -104,6 +114,8 @@ build/benchmark_apple_speech --audio /path/to/fixture.wav --realtime
 bo-finder/
 ├── build.sh                           # 一键单元测试、图标生成、编译、打包、签名脚本
 ├── LICENSE                            # MIT 开源协议
+├── docs/
+│   └── security-gateway-design.md     # 安全网关（大模型 + GitHub 双出口密钥防泄漏）架构与回退方案设计文档
 ├── Shared/
 │   ├── Models.swift                   # 路径格式、应用配置、运行时状态与 IPC 数据模型
 │   ├── PathFormatter.swift            # 多格式路径格式化与终端转义实现

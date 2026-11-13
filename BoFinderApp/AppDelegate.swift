@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setupStatusItem()
         setupApplicationMenu()
         EnvManager.shared.activateOnLaunch()
+        GatewayManager.shared.activateOnLaunchIfEnabled()
         MeetingManager.shared.activate()
         MeetingManager.shared.onRecordingChanged = { [weak self] in
             let isRec = MeetingManager.shared.active != nil
@@ -95,6 +96,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             PermissionGuideOverlayController.shared.dismissImmediately()
         }
         MeetingProcessRegistry.shared.terminateAll()
+        GatewayManager.shared.shutdownCleanly()
         CutPasteManager.shared.clearCut(showHUD: false)
     }
 
@@ -509,6 +511,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(NSMenuItem.separator())
 
         // Environment Variables Quick Menu
+        let gateway = GatewayManager.shared
+        let gwTitle = gateway.isDaemonRunning
+            ? "安全网关 · 守护中 (\(gateway.prefs.selectedTier.shortBadge))"
+            : "安全网关 · 未开启…"
+        let gwItem = NSMenuItem(
+            title: gwTitle,
+            action: #selector(openGatewayPage(_:)),
+            keyEquivalent: ""
+        )
+        gwItem.target = self
+        gwItem.image = NSImage(
+            systemSymbolName: gateway.isDaemonRunning ? "checkmark.shield.fill" : "checkmark.shield",
+            accessibilityDescription: nil
+        )
+        menu.addItem(gwItem)
+        menu.addItem(NSMenuItem.separator())
+
         let envManager = EnvManager.shared
         let envRoot = NSMenuItem(
             title: "环境变量维护 (\(envManager.entries.filter(\.isEnabled).count)/\(envManager.entries.count))",
@@ -750,6 +769,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openEnvPage(_ sender: Any?) {
         SettingsWindowController.shared.showWindow(page: "env")
+    }
+
+    @objc private func openGatewayPage(_ sender: Any?) {
+        SettingsWindowController.shared.showWindow(page: "gateway")
     }
 
     @objc private func refreshEnvFromMenuBar(_ sender: Any?) {

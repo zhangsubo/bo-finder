@@ -37,6 +37,8 @@ struct SettingsView: View {
                         Label("文件工具", systemImage: "folder").foregroundColor(.secondary)
                     } else if selectedPage == "env" {
                         Label("环境变量", systemImage: "terminal").foregroundColor(.secondary)
+                    } else if selectedPage == "gateway" {
+                        Label("安全网关", systemImage: "checkmark.shield").foregroundColor(.secondary)
                     }
                 }
                 .padding(.horizontal, 28).frame(height: 48)
@@ -46,7 +48,7 @@ struct SettingsView: View {
                     case "env":
                         EnvView()
                     case "gateway":
-                        comingSoon(title: "安全网关", symbol: "checkmark.shield", detail: "通过手机确认 Agent 的敏感操作。", note: "让每一次授权，都由你决定。")
+                        GatewayView()
                     case "meetings":
                         MeetingView()
                     case "settings": globalSettings
@@ -99,7 +101,7 @@ struct SettingsView: View {
             sidebarButton("文件工具", symbol: "folder", page: "files")
             sidebarButton("环境变量", symbol: "terminal", page: "env")
             sidebarButton("会议助手", symbol: "mic", page: "meetings")
-            sidebarButton("安全网关", symbol: "checkmark.shield", page: "gateway", upcoming: true)
+            sidebarButton("安全网关", symbol: "checkmark.shield", page: "gateway")
             Spacer(minLength: 20)
             Divider().padding(.bottom, 6)
             sidebarButton("设置与关于", symbol: "gearshape", page: "settings")
