@@ -108,6 +108,7 @@ final class EnvManager: ObservableObject {
     @Published private(set) var lastSyncedAt: Date?
     @Published var statusMessage: String = ""
     @Published var errorMessage: String = ""
+    var onSecretsChanged: (() -> Void)?
 
     private var secretCache: [UUID: String] = [:]
     private let syncQueue = DispatchQueue(label: "com.bofinder.deskside.env-sync", qos: .userInitiated)
@@ -156,6 +157,7 @@ final class EnvManager: ObservableObject {
             // Non-fatal on launch
         }
         syncLaunchctlAsync()
+        onSecretsChanged?()
     }
 
     func refreshRuntimeStatus() {
@@ -405,6 +407,7 @@ final class EnvManager: ObservableObject {
         do {
             try saveStoreJSON()
             syncLaunchctlAsync()
+        onSecretsChanged?()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -555,6 +558,7 @@ final class EnvManager: ObservableObject {
                         for (k, v) in loaded where self.secretCache[k] == nil {
                             self.secretCache[k] = v
                         }
+                        self.onSecretsChanged?()
                     }
                 }
             }
@@ -656,6 +660,7 @@ final class EnvManager: ObservableObject {
         lastSyncedAt = now
 
         syncLaunchctlAsync()
+        onSecretsChanged?()
 
         let shellDesc = refreshedShells > 0
             ? "已实时刷新 \(refreshedShells) 个活动终端"

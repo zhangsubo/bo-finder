@@ -48,12 +48,7 @@ struct SettingsView: View {
                     case "env":
                         EnvView()
                     case "gateway":
-                        comingSoon(
-                            title: "安全网关",
-                            symbol: "checkmark.shield",
-                            detail: "拦截发往大模型与推送到 GitHub 的密钥及敏感凭证。",
-                            note: "独立本地守护引擎 · 优先接入 Surge / 开源 mitmproxy 透明捕获（或回退自带代理） · 联动环境变量密钥库零误报防护。"
-                        )
+                        GatewayView()
                     case "meetings":
                         MeetingView()
                     case "settings": globalSettings
@@ -106,7 +101,7 @@ struct SettingsView: View {
             sidebarButton("文件工具", symbol: "folder", page: "files")
             sidebarButton("环境变量", symbol: "terminal", page: "env")
             sidebarButton("会议助手", symbol: "mic", page: "meetings")
-            sidebarButton("安全网关", symbol: "checkmark.shield", page: "gateway", upcoming: true)
+            sidebarButton("安全网关", symbol: "checkmark.shield", page: "gateway")
             Spacer(minLength: 20)
             Divider().padding(.bottom, 6)
             sidebarButton("设置与关于", symbol: "gearshape", page: "settings")

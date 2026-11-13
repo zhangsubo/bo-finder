@@ -61,6 +61,14 @@ xcrun swiftc -sdk "$SDK_PATH" -target "$TARGET" -framework Cocoa \
     "$ROOT_DIR/Tests/EnvTests.swift" -o "$BUILD_DIR/run_env_tests"
 "$BUILD_DIR/run_env_tests"
 
+xcrun swiftc -sdk "$SDK_PATH" -target "$TARGET" -framework Cocoa \
+    "$ROOT_DIR/BoFinderApp/GatewayModels.swift" \
+    "$ROOT_DIR/Tests/GatewayTests.swift" -o "$BUILD_DIR/run_gateway_tests"
+"$BUILD_DIR/run_gateway_tests"
+
+echo "    Running GuardEngine Go tests..."
+(cd "$ROOT_DIR/GuardEngine" && CGO_ENABLED=0 go test ./...)
+
 echo "==> [2/5] Preparing bundle directories..."
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_BUNDLE/Contents/MacOS"
@@ -111,6 +119,16 @@ xcrun swiftc \
     "$ROOT_DIR/BoFinderSync/FinderSync.swift" \
     -o "$APPEX_BUNDLE/Contents/MacOS/BoFinderSync"
 
+echo "==> [3.5/5] Compiling deskside-guard (Security Gateway Go Engine)..."
+(
+    cd "$ROOT_DIR/GuardEngine"
+    GOOS=darwin GOARCH="$ARCH" CGO_ENABLED=0 go build \
+        -trimpath \
+        -ldflags="-s -w -X main.Version=${EFFECTIVE_VERSION:-1.0.0}" \
+        -o "$APP_BUNDLE/Contents/MacOS/deskside-guard" \
+        ./cmd/deskside-guard
+)
+
 echo "==> [4/5] Compiling DeskSide.app (Main Menu Bar Application)..."
 xcrun swiftc \
     -sdk "$SDK_PATH" \
@@ -155,6 +173,9 @@ xcrun swiftc \
     "$ROOT_DIR/BoFinderApp/EnvModels.swift" \
     "$ROOT_DIR/BoFinderApp/EnvManager.swift" \
     "$ROOT_DIR/BoFinderApp/EnvView.swift" \
+    "$ROOT_DIR/BoFinderApp/GatewayModels.swift" \
+    "$ROOT_DIR/BoFinderApp/GatewayManager.swift" \
+    "$ROOT_DIR/BoFinderApp/GatewayView.swift" \
     "$ROOT_DIR/BoFinderApp/SettingsWindow.swift" \
     "$ROOT_DIR/BoFinderApp/AppDelegate.swift" \
     "$ROOT_DIR/BoFinderApp/main.swift" \
@@ -175,6 +196,9 @@ fi
 codesign --force --sign "$SIGN_IDENTITY" \
     --entitlements "$ROOT_DIR/BoFinderSync/BoFinderSync.entitlements" \
     "$APPEX_BUNDLE"
+
+codesign --force --sign "$SIGN_IDENTITY" \
+    "$APP_BUNDLE/Contents/MacOS/deskside-guard"
 
 codesign --force --sign "$SIGN_IDENTITY" \
     --entitlements "$ROOT_DIR/BoFinderApp/BoFinder.entitlements" \

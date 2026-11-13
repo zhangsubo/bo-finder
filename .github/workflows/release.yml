@@ -38,6 +38,12 @@ jobs:
           echo "SDK version: $(xcrun --sdk macosx --show-sdk-version)"
           swift --version
 
+      - name: Setup Go toolchain for GuardEngine
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+          cache-dependency-path: GuardEngine/go.mod
+
       - name: Resolve release version
         id: meta
         run: |
