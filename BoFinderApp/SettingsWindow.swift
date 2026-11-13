@@ -10,6 +10,15 @@ struct SettingsView: View {
     @StateObject private var shortcutRecorder = ShortcutRecorderController()
 
     @State private var selectedTab: Int = 0
+    @State private var draggingPathFormat: PathFormat? = nil
+    @State private var dragSourceIndex: Int? = nil
+    @State private var dragTargetIndex: Int? = nil
+    @State private var dragTranslationY: CGFloat = 0
+    @State private var settlingFormat: PathFormat? = nil
+    @State private var settleOffsetY: CGFloat = 0
+    @GestureState private var isFormatDragGestureActive: Bool = false
+
+    private let formatRowHeight: CGFloat = 54
 
     private let sampleURL = URL(fileURLWithPath: "\(PathFormatter.realHomeDirectory())/Documents/项目资料/DeskSide 测试文件 (1).pdf")
 
@@ -248,56 +257,303 @@ struct SettingsView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
-                GroupBox(label: Label("启用的路径格式（勾选后在右键及状态栏菜单中显示）", systemImage: "list.bullet.rectangle")) {
+                GroupBox(label: Label("启用的路径格式（勾选后在右键及状态栏菜单中显示，越往上越靠前）", systemImage: "list.bullet.rectangle")) {
+                    let orderedFormats = BoFinderConfig.normalizedFormatOrder(
+                        startingWith: cutPasteManager.state.config.formatOrder
+                    )
+                    let previewFormats = previewReorderedFormats(orderedFormats)
+                    let enabledSet = Set(cutPasteManager.state.config.enabledFormats)
+                    let previewDisplayFormats = previewFormats.filter { enabledSet.contains($0) }
                     VStack(alignment: .leading, spacing: 10) {
-                        ForEach(PathFormat.allCases) { format in
-                            let isOn = cutPasteManager.state.config.enabledFormats.contains(format)
-                            VStack(alignment: .leading, spacing: 3) {
-                                Toggle(isOn: Binding(
-                                    get: { isOn },
-                                    set: { enabled in
-                                        cutPasteManager.updateConfig { cfg in
-                                            if enabled {
-                                                if !cfg.enabledFormats.contains(format) {
-                                                    cfg.enabledFormats.append(format)
-                                                }
-                                            } else {
-                                                if cfg.enabledFormats.count > 1 {
-                                                    cfg.enabledFormats.removeAll { $0 == format }
-                                                }
-                                            }
-                                        }
-                                    }
-                                )) {
-                                    HStack(spacing: 6) {
-                                        Image(systemName: format.symbolName)
-                                            .frame(width: 18)
-                                            .foregroundColor(.accentColor)
-                                        Text(format.title)
-                                            .fontWeight(.medium)
+                        HStack(spacing: 6) {
+                            Image(systemName: "arrow.up.arrow.down")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Text("按住左侧手柄上下拖动整行（或点击右侧上下按钮）调整顺序，越往上展示越靠前。")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            if orderedFormats != PathFormat.allCases {
+                                Button("恢复默认顺序") {
+                                    withAnimation(.easeInOut(duration: 0.18)) {
+                                        cutPasteManager.updateConfig { $0.resetFormatOrder() }
                                     }
                                 }
-
-                                let preview = PathFormatter.formatSingle(
-                                    url: sampleURL,
-                                    as: format,
-                                    windowsStyle: cutPasteManager.state.config.windowsPathStyle
-                                )
-                                Text("示例：\(preview)")
-                                    .font(.system(size: 11, design: .monospaced))
-                                    .foregroundColor(.secondary)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                                    .padding(.leading, 26)
+                                .controlSize(.small)
                             }
-                            if format != PathFormat.allCases.last {
-                                Divider()
+                        }
+
+                        Divider()
+
+                        VStack(alignment: .leading, spacing: 0) {
+                            ForEach(orderedFormats) { format in
+                                let index = orderedFormats.firstIndex(of: format) ?? 0
+                                let isOn = enabledSet.contains(format)
+                                let enabledRank = previewDisplayFormats.firstIndex(of: format).map { $0 + 1 }
+                                let isDraggingThis = (draggingPathFormat == format)
+                                let isElevated = isDraggingThis || (settlingFormat == format)
+                                let rowOffset = formatRowVisualOffset(for: index, format: format)
+                                let dragGesture = makeFormatReorderGesture(for: format, orderedFormats: orderedFormats)
+
+                                HStack(alignment: .center, spacing: 8) {
+                                    Image(systemName: "line.3.horizontal")
+                                        .font(.system(size: 13, weight: .medium))
+                                        .foregroundColor(isDraggingThis ? .accentColor : .secondary.opacity(0.75))
+                                        .frame(width: 26, height: formatRowHeight - 4)
+                                        .contentShape(Rectangle())
+                                        .help("按住上下拖动整行调整顺序")
+                                        .gesture(dragGesture)
+
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        HStack(spacing: 0) {
+                                            Toggle(isOn: Binding(
+                                                get: { isOn },
+                                                set: { enabled in
+                                                    cutPasteManager.updateConfig { cfg in
+                                                        cfg.setFormatEnabled(format, enabled: enabled)
+                                                    }
+                                                }
+                                            )) {
+                                                HStack(spacing: 6) {
+                                                    Image(systemName: format.symbolName)
+                                                        .frame(width: 18)
+                                                        .foregroundColor(.accentColor)
+                                                    Text(format.title)
+                                                        .fontWeight(.medium)
+                                                }
+                                            }
+
+                                            Spacer(minLength: 8)
+                                                .frame(height: 20)
+                                                .contentShape(Rectangle())
+                                                .gesture(dragGesture)
+                                        }
+
+                                        let preview = PathFormatter.formatSingle(
+                                            url: sampleURL,
+                                            as: format,
+                                            windowsStyle: cutPasteManager.state.config.windowsPathStyle
+                                        )
+                                        Text("示例：\(preview)")
+                                            .font(.system(size: 11, design: .monospaced))
+                                            .foregroundColor(.secondary)
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                            .padding(.leading, 26)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                            .contentShape(Rectangle())
+                                            .gesture(dragGesture)
+                                    }
+
+                                    if isOn, let rank = enabledRank {
+                                        Text("第 \(rank) 位")
+                                            .font(.system(size: 11, weight: .medium, design: .rounded))
+                                            .foregroundColor(.accentColor)
+                                            .padding(.horizontal, 7)
+                                            .padding(.vertical, 2)
+                                            .background(Color.accentColor.opacity(0.12))
+                                            .clipShape(Capsule())
+                                            .gesture(dragGesture)
+                                    }
+
+                                    HStack(spacing: 4) {
+                                        Button {
+                                            withAnimation(.easeInOut(duration: 0.16)) {
+                                                cutPasteManager.updateConfig { $0.moveFormat(format, by: -1) }
+                                            }
+                                        } label: {
+                                            Image(systemName: "chevron.up")
+                                                .font(.system(size: 11, weight: .semibold))
+                                                .frame(width: 22, height: 20)
+                                        }
+                                        .buttonStyle(.bordered)
+                                        .controlSize(.small)
+                                        .disabled(index == 0 || draggingPathFormat != nil)
+                                        .help("上移（展示更靠前）")
+
+                                        Button {
+                                            withAnimation(.easeInOut(duration: 0.16)) {
+                                                cutPasteManager.updateConfig { $0.moveFormat(format, by: 1) }
+                                            }
+                                        } label: {
+                                            Image(systemName: "chevron.down")
+                                                .font(.system(size: 11, weight: .semibold))
+                                                .frame(width: 22, height: 20)
+                                        }
+                                        .buttonStyle(.bordered)
+                                        .controlSize(.small)
+                                        .disabled(index == orderedFormats.count - 1 || draggingPathFormat != nil)
+                                        .help("下移（展示更靠后）")
+                                    }
+                                }
+                                .padding(.horizontal, 6)
+                                .frame(height: formatRowHeight)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .fill(isDraggingThis ? Color(nsColor: .controlBackgroundColor) : Color.clear)
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .stroke(isDraggingThis ? Color.accentColor.opacity(0.4) : Color.clear, lineWidth: 1)
+                                )
+                                .overlay(alignment: .bottom) {
+                                    if index < orderedFormats.count - 1 && !isDraggingThis {
+                                        Divider()
+                                    }
+                                }
+                                .shadow(
+                                    color: isDraggingThis ? Color.black.opacity(0.14) : Color.clear,
+                                    radius: isDraggingThis ? 8 : 0,
+                                    x: 0,
+                                    y: isDraggingThis ? 3 : 0
+                                )
+                                .offset(y: rowOffset)
+                                .zIndex(isElevated ? 10 : 0)
+                                .animation(
+                                    isDraggingThis ? nil : .interactiveSpring(response: 0.22, dampingFraction: 0.86),
+                                    value: dragTargetIndex
+                                )
+                                .contextMenu {
+                                    Button("移至最前（置顶）") {
+                                        guard let first = orderedFormats.first else { return }
+                                        withAnimation(.easeInOut(duration: 0.16)) {
+                                            cutPasteManager.updateConfig { $0.moveFormat(format, to: first) }
+                                        }
+                                    }
+                                    .disabled(index == 0)
+
+                                    Button("上移一位") {
+                                        withAnimation(.easeInOut(duration: 0.16)) {
+                                            cutPasteManager.updateConfig { $0.moveFormat(format, by: -1) }
+                                        }
+                                    }
+                                    .disabled(index == 0)
+
+                                    Button("下移一位") {
+                                        withAnimation(.easeInOut(duration: 0.16)) {
+                                            cutPasteManager.updateConfig { $0.moveFormat(format, by: 1) }
+                                        }
+                                    }
+                                    .disabled(index == orderedFormats.count - 1)
+
+                                    Button("移至最后") {
+                                        guard let last = orderedFormats.last else { return }
+                                        withAnimation(.easeInOut(duration: 0.16)) {
+                                            cutPasteManager.updateConfig { $0.moveFormat(format, to: last) }
+                                        }
+                                    }
+                                    .disabled(index == orderedFormats.count - 1)
+                                }
+                            }
+                        }
+                        .coordinateSpace(name: "pathFormatList")
+                        .onChange(of: isFormatDragGestureActive) { _, active in
+                            if !active, draggingPathFormat != nil {
+                                finishFormatReorderDrag(orderedFormats: orderedFormats)
                             }
                         }
                     }
                     .padding(10)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
+            }
+        }
+    }
+
+    private func previewReorderedFormats(_ base: [PathFormat]) -> [PathFormat] {
+        guard let src = dragSourceIndex,
+              let dst = dragTargetIndex,
+              src != dst,
+              base.indices.contains(src),
+              base.indices.contains(dst) else {
+            return base
+        }
+        var copy = base
+        let item = copy.remove(at: src)
+        copy.insert(item, at: dst)
+        return copy
+    }
+
+    private func formatRowVisualOffset(for index: Int, format: PathFormat) -> CGFloat {
+        if draggingPathFormat == format {
+            return dragTranslationY
+        }
+        if settlingFormat == format {
+            return settleOffsetY
+        }
+        guard let src = dragSourceIndex, let dst = dragTargetIndex, src != dst else {
+            return 0
+        }
+        if src < dst, index > src, index <= dst {
+            return -formatRowHeight
+        }
+        if src > dst, index >= dst, index < src {
+            return formatRowHeight
+        }
+        return 0
+    }
+
+    private func makeFormatReorderGesture(
+        for format: PathFormat,
+        orderedFormats: [PathFormat]
+    ) -> some Gesture {
+        DragGesture(minimumDistance: 2, coordinateSpace: .named("pathFormatList"))
+            .updating($isFormatDragGestureActive) { _, state, _ in
+                state = true
+            }
+            .onChanged { value in
+                guard let currentIndex = orderedFormats.firstIndex(of: format) else { return }
+                if draggingPathFormat == nil {
+                    settlingFormat = nil
+                    settleOffsetY = 0
+                    draggingPathFormat = format
+                    dragSourceIndex = currentIndex
+                    dragTargetIndex = currentIndex
+                }
+                guard draggingPathFormat == format, let src = dragSourceIndex else { return }
+                let minTranslation = -CGFloat(src) * formatRowHeight - 6
+                let maxTranslation = CGFloat(orderedFormats.count - 1 - src) * formatRowHeight + 6
+                let clamped = min(max(value.translation.height, minTranslation), maxTranslation)
+                dragTranslationY = clamped
+
+                let projectedSlot = (CGFloat(src) * formatRowHeight + clamped) / formatRowHeight
+                let nextTarget = min(max(Int(projectedSlot.rounded()), 0), orderedFormats.count - 1)
+                if nextTarget != dragTargetIndex {
+                    dragTargetIndex = nextTarget
+                }
+            }
+            .onEnded { _ in
+                finishFormatReorderDrag(orderedFormats: orderedFormats)
+            }
+    }
+
+    private func finishFormatReorderDrag(orderedFormats: [PathFormat]) {
+        guard let dragged = draggingPathFormat else { return }
+        let src = dragSourceIndex ?? (orderedFormats.firstIndex(of: dragged) ?? 0)
+        let dst = dragTargetIndex ?? src
+        let residual = dragTranslationY - CGFloat(dst - src) * formatRowHeight
+
+        var noAnim = Transaction()
+        noAnim.disablesAnimations = true
+        withTransaction(noAnim) {
+            if src != dst, orderedFormats.indices.contains(dst) {
+                let targetFormat = orderedFormats[dst]
+                cutPasteManager.updateConfig { $0.moveFormat(dragged, to: targetFormat) }
+            }
+            draggingPathFormat = nil
+            dragSourceIndex = nil
+            dragTargetIndex = nil
+            dragTranslationY = 0
+            settlingFormat = dragged
+            settleOffsetY = residual
+        }
+
+        withAnimation(.spring(response: 0.18, dampingFraction: 0.9)) {
+            settleOffsetY = 0
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) {
+            if draggingPathFormat == nil {
+                settlingFormat = nil
             }
         }
     }

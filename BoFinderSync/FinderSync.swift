@@ -68,7 +68,7 @@ class FinderSync: FIFinderSync {
         refreshStateIfNeeded()
         let menu = NSMenu(title: "DeskSide")
         let config = runtimeState.config
-        let formats = config.enabledFormats.isEmpty ? [.posix, .url, .windows, .terminal] : config.enabledFormats
+        let formats = config.displayFormats
 
         if config.showTopQuickBarOnRightClick {
             let urls = effectiveTargetURLs()

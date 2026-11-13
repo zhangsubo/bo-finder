@@ -414,6 +414,7 @@ public enum HiddenFilesPreferenceParser {
 
 public struct BoFinderConfig: Codable, Equatable {
     public var enabledFormats: [PathFormat]
+    public var formatOrder: [PathFormat]
     public var useSubmenuForCopyPath: Bool
     public var windowsPathStyle: WindowsPathStyle
     public var enableCutAndPasteKeybindings: Bool
@@ -431,6 +432,7 @@ public struct BoFinderConfig: Codable, Equatable {
 
     public init(
         enabledFormats: [PathFormat] = [.posix, .url, .windows, .terminal, .tilde, .filename],
+        formatOrder: [PathFormat]? = nil,
         useSubmenuForCopyPath: Bool = true,
         windowsPathStyle: WindowsPathStyle = .backslash,
         enableCutAndPasteKeybindings: Bool = true,
@@ -446,7 +448,9 @@ public struct BoFinderConfig: Codable, Equatable {
         enableHiddenFilesShortcut: Bool = true,
         hiddenFilesShortcut: KeyShortcut = .defaultHiddenFiles
     ) {
-        self.enabledFormats = enabledFormats
+        let resolvedOrder = Self.normalizedFormatOrder(startingWith: formatOrder ?? enabledFormats)
+        self.formatOrder = resolvedOrder
+        self.enabledFormats = Self.orderedEnabledFormats(enabled: enabledFormats, order: resolvedOrder)
         self.useSubmenuForCopyPath = useSubmenuForCopyPath
         self.windowsPathStyle = windowsPathStyle
         self.enableCutAndPasteKeybindings = enableCutAndPasteKeybindings
@@ -465,7 +469,11 @@ public struct BoFinderConfig: Codable, Equatable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.enabledFormats = try container.decodeIfPresent([PathFormat].self, forKey: .enabledFormats) ?? [.posix, .url, .windows, .terminal, .tilde, .filename]
+        let rawEnabled = try container.decodeIfPresent([PathFormat].self, forKey: .enabledFormats) ?? [.posix, .url, .windows, .terminal, .tilde, .filename]
+        let rawOrder = try container.decodeIfPresent([PathFormat].self, forKey: .formatOrder)
+        let resolvedOrder = Self.normalizedFormatOrder(startingWith: rawOrder ?? rawEnabled)
+        self.formatOrder = resolvedOrder
+        self.enabledFormats = Self.orderedEnabledFormats(enabled: rawEnabled, order: resolvedOrder)
         self.useSubmenuForCopyPath = try container.decodeIfPresent(Bool.self, forKey: .useSubmenuForCopyPath) ?? true
         self.windowsPathStyle = try container.decodeIfPresent(WindowsPathStyle.self, forKey: .windowsPathStyle) ?? .backslash
         self.enableCutAndPasteKeybindings = try container.decodeIfPresent(Bool.self, forKey: .enableCutAndPasteKeybindings) ?? true
@@ -480,6 +488,68 @@ public struct BoFinderConfig: Codable, Equatable {
         self.launchAtLogin = try container.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? false
         self.enableHiddenFilesShortcut = try container.decodeIfPresent(Bool.self, forKey: .enableHiddenFilesShortcut) ?? true
         self.hiddenFilesShortcut = try container.decodeIfPresent(KeyShortcut.self, forKey: .hiddenFilesShortcut) ?? .defaultHiddenFiles
+    }
+
+    public static func normalizedFormatOrder(startingWith preferred: [PathFormat]) -> [PathFormat] {
+        var seen = Set<PathFormat>()
+        var result: [PathFormat] = []
+        for format in preferred where seen.insert(format).inserted {
+            result.append(format)
+        }
+        for format in PathFormat.allCases where seen.insert(format).inserted {
+            result.append(format)
+        }
+        return result
+    }
+
+    public static func orderedEnabledFormats(enabled: [PathFormat], order: [PathFormat]) -> [PathFormat] {
+        let normalizedOrder = normalizedFormatOrder(startingWith: order)
+        let enabledSet = Set(enabled)
+        return normalizedOrder.filter { enabledSet.contains($0) }
+    }
+
+    /// Enabled path formats ordered top-to-bottom as configured by the user, with a safe non-empty fallback.
+    public var displayFormats: [PathFormat] {
+        let ordered = Self.orderedEnabledFormats(enabled: enabledFormats, order: formatOrder)
+        return ordered.isEmpty ? [.posix, .url, .windows, .terminal] : ordered
+    }
+
+    public mutating func setFormatEnabled(_ format: PathFormat, enabled: Bool) {
+        formatOrder = Self.normalizedFormatOrder(startingWith: formatOrder)
+        var enabledSet = Set(enabledFormats)
+        if enabled {
+            enabledSet.insert(format)
+        } else if enabledSet.count > 1 {
+            enabledSet.remove(format)
+        }
+        enabledFormats = formatOrder.filter { enabledSet.contains($0) }
+    }
+
+    public mutating func moveFormat(_ format: PathFormat, by offset: Int) {
+        var order = Self.normalizedFormatOrder(startingWith: formatOrder)
+        guard let currentIndex = order.firstIndex(of: format) else { return }
+        let targetIndex = max(0, min(order.count - 1, currentIndex + offset))
+        guard targetIndex != currentIndex else { return }
+        let item = order.remove(at: currentIndex)
+        order.insert(item, at: targetIndex)
+        formatOrder = order
+        enabledFormats = Self.orderedEnabledFormats(enabled: enabledFormats, order: order)
+    }
+
+    public mutating func moveFormat(_ source: PathFormat, to target: PathFormat) {
+        guard source != target else { return }
+        var order = Self.normalizedFormatOrder(startingWith: formatOrder)
+        guard let fromIndex = order.firstIndex(of: source),
+              let toIndex = order.firstIndex(of: target) else { return }
+        let item = order.remove(at: fromIndex)
+        order.insert(item, at: toIndex)
+        formatOrder = order
+        enabledFormats = Self.orderedEnabledFormats(enabled: enabledFormats, order: order)
+    }
+
+    public mutating func resetFormatOrder() {
+        formatOrder = PathFormat.allCases
+        enabledFormats = Self.orderedEnabledFormats(enabled: enabledFormats, order: formatOrder)
     }
 }
 

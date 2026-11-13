@@ -19,9 +19,7 @@ final class QuickPopupMenuController: NSObject {
 
         let manager = CutPasteManager.shared
         let state = manager.state
-        let formats = state.config.enabledFormats.isEmpty
-            ? [.posix, .url, .windows, .terminal]
-            : state.config.enabledFormats
+        let formats = state.config.displayFormats
 
         let menu = NSMenu(title: "DeskSide 快捷菜单")
 
