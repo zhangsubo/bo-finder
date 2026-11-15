@@ -118,7 +118,8 @@ struct GatewayTests {
             "hand.raised.fill", "hand.raised.circle.fill", "exclamationmark.shield.fill",
             "sparkles.rectangle.stack.fill", "arrow.up.doc.on.clipboard",
             "doc.badge.gearshape.fill", "doc.on.doc.fill", "clock.badge.exclamationmark",
-            "exclamationmark.triangle.fill"
+            "exclamationmark.triangle.fill", "sparkles", "cpu", "cpu.fill",
+            "info.circle.fill", "checkmark.circle.fill"
         ]
         for sym in symbols {
             check(NSImage(systemSymbolName: sym, accessibilityDescription: nil) != nil, "SF Symbol '\(sym)' available")
@@ -220,6 +221,58 @@ struct GatewayTests {
         check(removedCount == 2, "Removes managed block from both canonical global files")
         let restoredClaude = try! String(contentsOf: hubClaude, encoding: .utf8)
         check(restoredClaude == "@~/.agent-rules/AGENTS.md\n\n## Claude Code Adapter\n", "Removal preserves original @import and user content verbatim")
+
+        // 9. 3-Layer Funnel Wire Models, Span Encoder, Hardware Probe & SHA-256 Weight Verification
+        check(
+            decodedLegacyPrefs?.useCoreMLEnhancedModel == true && decodedLegacyPrefs?.useFoundationModelsWhenAvailable == true,
+            "Legacy preferences.json defaults hybrid AI model flags to true"
+        )
+
+        let legacyCfgJSON = Data(#"{"listenAddr":"127.0.0.1:19840","defaultLLMAction":"mask"}"#.utf8)
+        let decodedLegacyCfg = try? JSONDecoder().decode(GatewayConfig.self, from: legacyCfgJSON)
+        check(
+            decodedLegacyCfg?.aiFunnel.l2VerifyEnabled == true && decodedLegacyCfg?.aiFunnel.l3NLScanEnabled == true,
+            "Legacy config.json defaults 3-layer AI funnel L2 and L3 toggles to true"
+        )
+
+        let exemptedEvent = GatewayAuditEvent(
+            id: "ev-ai-1",
+            timestamp: Date(),
+            channel: "git",
+            action: "ai_exempted",
+            target: "pre-commit",
+            client: "git-hook",
+            category: "CONTEXT_SECRET",
+            ruleName: "CONTEXT_KEY_SECRET",
+            maskedPreview: "mo****ey",
+            fingerprint: "sha256:001122334455",
+            location: "Tests/MockAuth.swift",
+            aiModel: "builtin-tiny-cnn",
+            count: 1
+        )
+        check(
+            exemptedEvent.isAIExempted && !exemptedEvent.isBlocked && exemptedEvent.actionLabel == "AI 复核放行",
+            "Audit event classifies ai_exempted distinctly from blocked/masked"
+        )
+
+        let sampleSpanText = "prefix=" + "candVal" + ";after"
+        let (spanIDs, spanSeg) = GatewaySpanEncoder.encodeUTF8Span(text: sampleSpanText, start: 7, end: 14)
+        check(spanIDs.count == 194 && spanSeg.count == 194, "Span encoder produces fixed 194-token window")
+        check(spanIDs[64] == 1 && spanSeg[64] == 2, "Span encoder places SEP1=1 at index 64 in segment 2")
+        check(spanIDs[65] == Int32(UInt8(ascii: "c")) + 3 && spanSeg[65] == 2, "Span encoder shifts candidate UTF-8 bytes by +3")
+        check(spanIDs[72] == 2 && spanSeg[72] == 2, "Span encoder places SEP2=2 immediately after candidate")
+        check(spanIDs[73] == Int32(UInt8(ascii: ";")) + 3 && spanSeg[73] == 3, "Span encoder places right context in segment 3")
+
+        let hwProbe = GatewayAIHardwareReport.probe()
+        check(!hwProbe.statusTitle.isEmpty && !hwProbe.statusDetail.isEmpty, "Hardware & Apple Intelligence probe returns diagnostic report")
+
+        var rejectedTamperedWeights = false
+        do {
+            _ = try GatewayCoreMLWeightAssembler.buildWeightBin(fromONNX: Data("tampered-payload".utf8))
+        } catch let err as NSError {
+            rejectedTamperedWeights = (err.code == 101)
+        }
+        check(rejectedTamperedWeights, "CoreML weight assembler strictly rejects unverified SHA-256 payload")
 
         print("Gateway tests: \(checks) passed")
     }

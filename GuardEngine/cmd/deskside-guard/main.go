@@ -87,7 +87,7 @@ func runServe(args []string) int {
 	}
 
 	cfg := store.Get()
-	engine = detector.NewEngine(cfg)
+	engine = detector.NewEngineWithStateDir(cfg, store.StateDir())
 	vault := masker.NewVault(45 * time.Minute)
 
 	ledger, err := audit.NewLedger(store.StateDir())
@@ -177,31 +177,35 @@ func runScan(args []string) int {
 	if err == nil {
 		cfg = store.Get()
 	}
-	engine := detector.NewEngine(cfg)
+	engine := detector.NewEngineWithStateDir(cfg, *stateDir)
 
 	files := fs.Args()
 	var all []detector.Finding
+	var allExempted []detector.Finding
 	if len(files) == 0 {
 		raw, err := io.ReadAll(os.Stdin)
 		if err != nil {
 			return 1
 		}
-		all = engine.Analyze(string(raw), detector.ScanOptions{})
+		all, allExempted = engine.AnalyzeDetailed(string(raw), detector.ScanOptions{})
 	} else {
 		for _, fp := range files {
 			raw, err := os.ReadFile(fp)
 			if err != nil {
 				continue
 			}
-			all = append(all, engine.Analyze(string(raw), detector.ScanOptions{FilePath: fp})...)
+			f, ex := engine.AnalyzeDetailed(string(raw), detector.ScanOptions{FilePath: fp})
+			all = append(all, f...)
+			allExempted = append(allExempted, ex...)
 		}
 	}
 
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	_ = enc.Encode(map[string]any{
-		"count":    len(all),
-		"findings": all,
+		"count":      len(all),
+		"findings":   all,
+		"aiExempted": allExempted,
 	})
 	if len(all) > 0 {
 		return 1

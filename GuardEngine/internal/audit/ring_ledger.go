@@ -20,15 +20,16 @@ const (
 type Event struct {
 	ID            string    `json:"id"`
 	Timestamp     time.Time `json:"timestamp"`
-	Channel       string    `json:"channel"`       // "llm" | "github" | "git" | "self-test"
-	Action        string    `json:"action"`        // "masked" | "blocked"
-	Target        string    `json:"target"`        // domain or git remote
-	Client        string    `json:"client"`        // e.g. "Claude Code", "Codex", "Git Push"
-	Category      string    `json:"category"`      // e.g. "ENV_SECRET", "CLOUD_AK"
-	RuleName      string    `json:"ruleName"`      // e.g. "ENV:OPENAI_API_KEY", "ALIYUN_ACCESS_KEY"
-	MaskedPreview string    `json:"maskedPreview"` // e.g. "LTAI5t****8f2a" (NEVER plaintext)
-	Fingerprint   string    `json:"fingerprint"`   // e.g. "sha256:9a1b2c3d4e5f"
-	Location      string    `json:"location"`      // JSON field or commit:file:line
+	Channel       string    `json:"channel"`            // "llm" | "github" | "git" | "self-test"
+	Action        string    `json:"action"`             // "masked" | "blocked" | "ai_exempted"
+	Target        string    `json:"target"`             // domain or git remote
+	Client        string    `json:"client"`             // e.g. "Claude Code", "Codex", "Git Push"
+	Category      string    `json:"category"`           // e.g. "ENV_SECRET", "CLOUD_AK", "AI_NL_SECRET"
+	RuleName      string    `json:"ruleName"`           // e.g. "ENV:OPENAI_API_KEY", "ALIYUN_ACCESS_KEY"
+	MaskedPreview string    `json:"maskedPreview"`      // e.g. "LTAI5t****8f2a" (NEVER plaintext)
+	Fingerprint   string    `json:"fingerprint"`        // e.g. "sha256:9a1b2c3d4e5f"
+	Location      string    `json:"location"`           // JSON field or commit:file:line
+	AIModel       string    `json:"aiModel,omitempty"`  // e.g. "builtin-tiny-cnn", "coreml-ane-large"
 	Count         int       `json:"count"`
 }
 
@@ -39,6 +40,8 @@ type DailyStats struct {
 	BlockedCount    int    `json:"blockedCount"`
 	GitScans        int    `json:"gitScans"`
 	GitBlockedCount int    `json:"gitBlockedCount"`
+	AIExemptedCount int    `json:"aiExemptedCount"`
+	L3DetectedCount int    `json:"l3DetectedCount"`
 }
 
 type Ledger struct {
@@ -107,11 +110,19 @@ func (l *Ledger) Record(ev Event) Event {
 	switch ev.Action {
 	case "masked":
 		l.stats.MaskedCount += ev.Count
+		if ev.Category == "AI_NL_SECRET" {
+			l.stats.L3DetectedCount += ev.Count
+		}
 	case "blocked":
 		l.stats.BlockedCount += ev.Count
 		if ev.Channel == "git" {
 			l.stats.GitBlockedCount += ev.Count
 		}
+		if ev.Category == "AI_NL_SECRET" {
+			l.stats.L3DetectedCount += ev.Count
+		}
+	case "ai_exempted":
+		l.stats.AIExemptedCount += ev.Count
 	}
 
 	l.events = append(l.events, ev)
@@ -209,11 +220,19 @@ func (l *Ledger) loadExisting() {
 			switch ev.Action {
 			case "masked":
 				l.stats.MaskedCount += ev.Count
+				if ev.Category == "AI_NL_SECRET" {
+					l.stats.L3DetectedCount += ev.Count
+				}
 			case "blocked":
 				l.stats.BlockedCount += ev.Count
 				if ev.Channel == "git" {
 					l.stats.GitBlockedCount += ev.Count
 				}
+				if ev.Category == "AI_NL_SECRET" {
+					l.stats.L3DetectedCount += ev.Count
+				}
+			case "ai_exempted":
+				l.stats.AIExemptedCount += ev.Count
 			}
 		}
 	}

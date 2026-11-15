@@ -417,7 +417,10 @@ func (s *Server) inspectAndForward(w http.ResponseWriter, r *http.Request, targe
 
 			if isGitHubHost(host) {
 				s.ledger.RecordScan("github")
-				ghHits := s.inspectGitHubPayload(targetURL.Path, r.Header.Get("Content-Type"), inspectBytes)
+				ghHits, ghExempted := s.inspectGitHubPayload(targetURL.Path, r.Header.Get("Content-Type"), inspectBytes)
+				if len(ghExempted) > 0 {
+					s.recordHits("github", "ai_exempted", host, clientName, ghExempted)
+				}
 				if len(ghHits) > 0 {
 					s.recordHits("github", "blocked", host, clientName, ghHits)
 					writeGitHubBlockResponse(w, ghHits)
@@ -429,7 +432,10 @@ func (s *Server) inspectAndForward(w http.ResponseWriter, r *http.Request, targe
 				s.ledger.RecordScan("llm")
 				cfg := s.store.Get()
 				maskMode := cfg.DefaultLLMAction == config.ActionMask
-				rewritten, llmHits, modified := masker.InspectAndMaskJSON(inspectBytes, s.engine, s.vault, maskMode)
+				rewritten, llmHits, llmExempted, modified := masker.InspectAndMaskJSONDetailed(inspectBytes, s.engine, s.vault, maskMode)
+				if len(llmExempted) > 0 {
+					s.recordHits("llm", "ai_exempted", host, clientName, llmExempted)
+				}
 				if len(llmHits) > 0 {
 					if !maskMode {
 						s.recordHits("llm", "blocked", host, clientName, llmHits)
@@ -563,13 +569,14 @@ func streamFlush(w http.ResponseWriter, src io.Reader) {
 	}
 }
 
-func (s *Server) inspectGitHubPayload(urlPath, contentType string, payload []byte) []masker.HitSummary {
+func (s *Server) inspectGitHubPayload(urlPath, contentType string, payload []byte) ([]masker.HitSummary, []masker.HitSummary) {
 	if len(payload) == 0 {
-		return nil
+		return nil, nil
 	}
 	var hits []masker.HitSummary
+	var exempted []masker.HitSummary
 
-	addFindings := func(findings []detector.Finding, loc string) {
+	addFindings := func(findings []detector.Finding, ex []detector.Finding, loc string) {
 		for _, f := range findings {
 			hits = append(hits, masker.HitSummary{
 				Category:      f.Category,
@@ -577,14 +584,26 @@ func (s *Server) inspectGitHubPayload(urlPath, contentType string, payload []byt
 				MaskedPreview: f.MaskedPreview,
 				Fingerprint:   f.Fingerprint,
 				Location:      loc,
+				AIModel:       f.AIModel,
+			})
+		}
+		for _, ef := range ex {
+			exempted = append(exempted, masker.HitSummary{
+				Category:      ef.Category,
+				RuleName:      ef.RuleName,
+				MaskedPreview: ef.MaskedPreview,
+				Fingerprint:   ef.Fingerprint,
+				Location:      loc,
+				AIModel:       ef.AIModel,
 			})
 		}
 	}
 
 	// 1. Git smart HTTP push (`/.../git-receive-pack`) — inspect raw & zlib-inflated packfile objects!
 	if strings.HasSuffix(urlPath, "/git-receive-pack") || strings.Contains(contentType, "git-receive-pack") {
-		addFindings(s.scanGitReceivePack(payload), "git-receive-pack")
-		return hits
+		f, ex := s.scanGitReceivePack(payload)
+		addFindings(f, ex, "git-receive-pack")
+		return hits, exempted
 	}
 
 	// 2. JSON API payloads (Contents API base64 `content`, Gists, Issues/PR comments, Actions secrets).
@@ -607,7 +626,8 @@ func (s *Server) inspectGitHubPayload(urlPath, contentType string, payload []byt
 						if strVal, ok := v.(string); ok {
 							// GitHub Contents API & Blobs API send base64-encoded file contents under `content`.
 							if decoded, okB64 := decodeLooseBase64(strVal); okB64 {
-								addFindings(s.engine.Analyze(decoded, detector.ScanOptions{FilePath: fileHint}), nextPath+"(base64)")
+								f, ex := s.engine.AnalyzeDetailed(decoded, detector.ScanOptions{FilePath: fileHint, Channel: "github"})
+								addFindings(f, ex, nextPath+"(base64)")
 								continue
 							}
 						}
@@ -619,30 +639,33 @@ func (s *Server) inspectGitHubPayload(urlPath, contentType string, payload []byt
 					walkGH(elem, fmt.Sprintf("%s[%d]", path, i))
 				}
 			case string:
-				addFindings(s.engine.Analyze(typed, detector.ScanOptions{}), path)
+				f, ex := s.engine.AnalyzeDetailed(typed, detector.ScanOptions{Channel: "github"})
+				addFindings(f, ex, path)
 			}
 		}
 		walkGH(root, "")
-		return hits
+		return hits, exempted
 	}
 
 	// 3. Fallback raw text scan.
-	addFindings(s.engine.Analyze(string(payload), detector.ScanOptions{}), "body")
-	return hits
+	f, ex := s.engine.AnalyzeDetailed(string(payload), detector.ScanOptions{Channel: "github"})
+	addFindings(f, ex, "body")
+	return hits, exempted
 }
 
-func (s *Server) scanGitReceivePack(payload []byte) []detector.Finding {
+func (s *Server) scanGitReceivePack(payload []byte) ([]detector.Finding, []detector.Finding) {
 	var all []detector.Finding
+	var allEx []detector.Finding
 	packIdx := bytes.Index(payload, []byte("PACK"))
 	if packIdx < 0 || packIdx+12 > len(payload) {
-		return s.engine.Analyze(string(payload), detector.ScanOptions{})
+		return s.engine.AnalyzeDetailed(string(payload), detector.ScanOptions{Channel: "github"})
 	}
 
 	pack := payload[packIdx:]
 	version := binary.BigEndian.Uint32(pack[4:8])
 	numObjects := binary.BigEndian.Uint32(pack[8:12])
 	if version != 2 && version != 3 {
-		return nil
+		return nil, nil
 	}
 	if numObjects > 2000 {
 		numObjects = 2000
@@ -690,14 +713,15 @@ func (s *Server) scanGitReceivePack(payload []byte) []detector.Finding {
 
 		// Inspect Commit (1), Blob (3), and Tag (4) objects.
 		if (objType == 1 || objType == 3 || objType == 4) && len(inflated) > 0 {
-			findings := s.engine.Analyze(string(inflated), detector.ScanOptions{})
+			findings, ex := s.engine.AnalyzeDetailed(string(inflated), detector.ScanOptions{Channel: "github"})
 			all = append(all, findings...)
+			allEx = append(allEx, ex...)
 			if len(all) >= 20 {
 				break
 			}
 		}
 	}
-	return all
+	return all, allEx
 }
 
 func (s *Server) recordHits(channel, action, target, client string, hits []masker.HitSummary) {
@@ -725,6 +749,7 @@ func (s *Server) recordHits(channel, action, target, client string, hits []maske
 			MaskedPreview: h.MaskedPreview,
 			Fingerprint:   h.Fingerprint,
 			Location:      h.Location,
+			AIModel:       h.AIModel,
 			Count:         1,
 		}
 	}

@@ -61,8 +61,13 @@ xcrun swiftc -sdk "$SDK_PATH" -target "$TARGET" -framework Cocoa \
     "$ROOT_DIR/Tests/EnvTests.swift" -o "$BUILD_DIR/run_env_tests"
 "$BUILD_DIR/run_env_tests"
 
-xcrun swiftc -sdk "$SDK_PATH" -target "$TARGET" -framework Cocoa \
+xcrun swiftc -sdk "$SDK_PATH" -target "$TARGET" \
+    -parse-as-library \
+    -framework Cocoa \
+    -framework CoreML \
+    -framework IOKit \
     "$ROOT_DIR/BoFinderApp/GatewayModels.swift" \
+    "$ROOT_DIR/BoFinderApp/GatewayAIEngine.swift" \
     "$ROOT_DIR/Tests/GatewayTests.swift" -o "$BUILD_DIR/run_gateway_tests"
 "$BUILD_DIR/run_gateway_tests"
 
@@ -96,6 +101,7 @@ cp "$ROOT_DIR/BoFinderApp/AppLogo.png" "$APP_BUNDLE/Contents/Resources/AppLogo.p
 cp "$ROOT_DIR/BoFinderApp/MenuBarLogo.png" "$APP_BUNDLE/Contents/Resources/MenuBarLogo.png"
 cp "$ROOT_DIR/scripts/meeting_worker.py" "$APP_BUNDLE/Contents/Resources/meeting_worker.py"
 cp -R "$ROOT_DIR/BoFinderApp/Resources/SpeakerEmbedding.mlpackage" "$APP_BUNDLE/Contents/Resources/SpeakerEmbedding.mlpackage"
+cp -R "$ROOT_DIR/BoFinderApp/Resources/SecretGuardGraph" "$APP_BUNDLE/Contents/Resources/SecretGuardGraph"
 
 ICONSET_DIR="$BUILD_DIR/AppIcon.iconset"
 xcrun swift "$ROOT_DIR/scripts/generate_icon.swift" "$ICONSET_DIR" "$ROOT_DIR/BoFinderApp/AppLogo.png"
@@ -144,6 +150,7 @@ xcrun swiftc \
     -framework AudioToolbox \
     -framework Speech \
     -framework CoreML \
+    -framework IOKit \
     -framework Accelerate \
     -framework UniformTypeIdentifiers \
     "$ROOT_DIR/Shared/Models.swift" \
@@ -174,6 +181,7 @@ xcrun swiftc \
     "$ROOT_DIR/BoFinderApp/EnvManager.swift" \
     "$ROOT_DIR/BoFinderApp/EnvView.swift" \
     "$ROOT_DIR/BoFinderApp/GatewayModels.swift" \
+    "$ROOT_DIR/BoFinderApp/GatewayAIEngine.swift" \
     "$ROOT_DIR/BoFinderApp/GatewayManager.swift" \
     "$ROOT_DIR/BoFinderApp/GatewayView.swift" \
     "$ROOT_DIR/BoFinderApp/SettingsWindow.swift" \

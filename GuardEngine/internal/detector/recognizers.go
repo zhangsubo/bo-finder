@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/zhangsubo/deskside-guard/internal/config"
+	"github.com/zhangsubo/deskside-guard/internal/mlguard"
 )
 
 type ruleDef struct {
@@ -227,15 +228,22 @@ type compiledCustom struct {
 
 type Engine struct {
 	mu               sync.RWMutex
+	stateDir         string
 	cfg              config.Config
 	knownSecrets     *KnownSecretMatcher
 	customs          []compiledCustom
 	allowFingerprint map[string]struct{}
 	allowPaths       []string
+	coproc           *mlguard.CoprocessorClient
 }
 
 func NewEngine(cfg config.Config) *Engine {
+	return NewEngineWithStateDir(cfg, config.DefaultStateDir())
+}
+
+func NewEngineWithStateDir(cfg config.Config, stateDir string) *Engine {
 	e := &Engine{
+		stateDir:     stateDir,
 		knownSecrets: NewKnownSecretMatcher(),
 	}
 	e.UpdateConfig(cfg)
@@ -273,10 +281,12 @@ func (e *Engine) UpdateConfig(cfg config.Config) {
 	}
 
 	e.mu.Lock()
+	sockPath := mlguard.CoprocessorSocketPath(e.stateDir, cfg.AIFunnel.CoprocessorSocket)
 	e.cfg = cfg
 	e.customs = customs
 	e.allowFingerprint = fps
 	e.allowPaths = paths
+	e.coproc = mlguard.NewCoprocessorClient(sockPath)
 	e.mu.Unlock()
 }
 
@@ -286,6 +296,16 @@ func (e *Engine) SetKnownSecrets(inputs []KnownSecretInput) {
 
 func (e *Engine) KnownSecretCount() int {
 	return e.knownSecrets.Count()
+}
+
+func (e *Engine) ActiveAIModel() string {
+	e.mu.RLock()
+	coproc := e.coproc
+	e.mu.RUnlock()
+	if coproc == nil {
+		return "builtin-tiny-cnn"
+	}
+	return coproc.ActiveModel()
 }
 
 func (e *Engine) IsPathAllowed(filePath string) bool {
@@ -310,17 +330,28 @@ func (e *Engine) IsPathAllowed(filePath string) bool {
 }
 
 func (e *Engine) Analyze(raw string, opts ScanOptions) []Finding {
+	kept, _ := e.AnalyzeDetailed(raw, opts)
+	return kept
+}
+
+// AnalyzeDetailed executes the 3-layer funnel:
+//   - L1: Deterministic high-confidence rules & EnvManager Aho-Corasick exact matches (never downgraded by AI).
+//   - L2: Gray-zone contextual hits adjudicated by CoreML ANE / FoundationModels / embedded TinyCNN;
+//         false positives are auto-exempted and returned in `aiExempted` for zero-plaintext audit visibility.
+//   - L3: Optional natural-language unformatted credential span detection on LLM prompts (`opts.Channel == "llm"`).
+func (e *Engine) AnalyzeDetailed(raw string, opts ScanOptions) ([]Finding, []Finding) {
 	if len(raw) == 0 {
-		return nil
+		return nil, nil
 	}
 	if opts.FilePath != "" && e.IsPathAllowed(opts.FilePath) {
-		return nil
+		return nil, nil
 	}
 
 	e.mu.RLock()
 	cfg := e.cfg
 	customs := e.customs
 	allowFP := e.allowFingerprint
+	coproc := e.coproc
 	e.mu.RUnlock()
 
 	var findings []Finding
@@ -337,15 +368,13 @@ func (e *Engine) Analyze(raw string, opts ScanOptions) []Finding {
 	// Deduplicate & resolve overlapping findings.
 	resolved := deduplicateFindings(findings)
 
-	// Filter out fingerprinted allowlist items & synthetic placeholders (<SECRET_1>).
-	if len(resolved) == 0 {
-		return nil
-	}
-	kept := resolved[:0]
+	var kept []Finding
+	var allCandidateSpans [][2]int
 	for _, f := range resolved {
 		if f.Start < 0 || f.End > len(raw) || f.Start >= f.End {
 			continue
 		}
+		allCandidateSpans = append(allCandidateSpans, [2]int{f.Start, f.End})
 		val := raw[f.Start:f.End]
 		if isGuardPlaceholder(val) {
 			continue
@@ -355,7 +384,88 @@ func (e *Engine) Analyze(raw string, opts ScanOptions) []Finding {
 		}
 		kept = append(kept, f)
 	}
-	return kept
+
+	// Funnel Stage L2: AI semantic false-positive adjudication on gray-zone rules ONLY.
+	var aiExempted []Finding
+	if cfg.AIFunnel.L2VerifyEnabled && len(kept) > 0 {
+		var grayIdx []int
+		var grayItems []mlguard.ScoreItem
+		for idx, f := range kept {
+			if mlguard.IsGrayZoneRule(f.RuleName) {
+				grayIdx = append(grayIdx, idx)
+				grayItems = append(grayItems, mlguard.ScoreItem{
+					Text:     raw,
+					Start:    f.Start,
+					End:      f.End,
+					RuleName: f.RuleName,
+					FilePath: opts.FilePath,
+					Channel:  opts.Channel,
+				})
+			}
+		}
+
+		if len(grayItems) > 0 {
+			verdicts := mlguard.EvaluateGrayZoneBatch(grayItems, coproc, cfg.AIFunnel.L2ExemptThreshold)
+			exemptByIdx := make(map[int]mlguard.GrayZoneVerdict, len(grayIdx))
+			for j, kIdx := range grayIdx {
+				v := verdicts[j]
+				kept[kIdx].AIModel = v.Model
+				kept[kIdx].AIReason = v.Reason
+				if v.Exempt {
+					exemptByIdx[kIdx] = v
+				}
+			}
+			if len(exemptByIdx) > 0 {
+				filtered := make([]Finding, 0, len(kept)-len(exemptByIdx))
+				for idx, f := range kept {
+					if v, isEx := exemptByIdx[idx]; isEx {
+						f.Score = v.Prob
+						aiExempted = append(aiExempted, f)
+					} else {
+						filtered = append(filtered, f)
+					}
+				}
+				kept = filtered
+			}
+		}
+	}
+
+	// Funnel Stage L3: Natural-language unformatted credential detection on LLM channel.
+	if cfg.AIFunnel.L3NLScanEnabled && opts.Channel == "llm" {
+		nlSpans := mlguard.ScanNaturalLanguage(raw, allCandidateSpans, coproc, cfg.AIFunnel.L3DetectThreshold)
+		if len(nlSpans) > 0 {
+			addedL3 := false
+			for _, sp := range nlSpans {
+				if sp.Start < 0 || sp.End > len(raw) || sp.Start >= sp.End {
+					continue
+				}
+				slice := raw[sp.Start:sp.End]
+				if isGuardPlaceholder(slice) {
+					continue
+				}
+				fp := FingerprintValue(slice)
+				if _, allowed := allowFP[fp]; allowed {
+					continue
+				}
+				kept = append(kept, Finding{
+					Category:      CategoryAISecret,
+					RuleName:      "AI_NL_SECRET",
+					Start:         sp.Start,
+					End:           sp.End,
+					Score:         sp.Score,
+					MaskedPreview: MaskValue(slice),
+					Fingerprint:   fp,
+					AIModel:       sp.Model,
+				})
+				addedL3 = true
+			}
+			if addedL3 {
+				kept = deduplicateFindings(kept)
+			}
+		}
+	}
+
+	return kept, aiExempted
 }
 
 func scanNormalized(raw string, norm normalizedView, cfg config.Config, customs []compiledCustom, checkBase64 bool) []Finding {

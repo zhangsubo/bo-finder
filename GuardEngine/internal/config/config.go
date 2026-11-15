@@ -47,6 +47,14 @@ type AllowlistEntry struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
+type AIFunnelConfig struct {
+	L2VerifyEnabled   bool    `json:"l2VerifyEnabled"`
+	L3NLScanEnabled   bool    `json:"l3NLScanEnabled"`
+	L2ExemptThreshold float64 `json:"l2ExemptThreshold"`
+	L3DetectThreshold float64 `json:"l3DetectThreshold"`
+	CoprocessorSocket string  `json:"coprocessorSocket"`
+}
+
 type Config struct {
 	ListenAddr       string           `json:"listenAddr"`
 	DefaultLLMAction string           `json:"defaultLLMAction"` // "mask" (default) | "block"
@@ -54,6 +62,7 @@ type Config struct {
 	ProtectedDomains []string         `json:"protectedDomains"`
 	UpstreamProxyURL string           `json:"upstreamProxyURL"`
 	RuleGroups       RuleGroups       `json:"ruleGroups"`
+	AIFunnel         AIFunnelConfig   `json:"aiFunnel"`
 	CustomPatterns   []CustomPattern  `json:"customPatterns"`
 	Allowlist        []AllowlistEntry `json:"allowlist"`
 }
@@ -89,6 +98,13 @@ func Default() Config {
 			PrivateKeysAndAuth:      true,
 			DatabaseURIs:            true,
 			ContextualAssignments:   true,
+		},
+		AIFunnel: AIFunnelConfig{
+			L2VerifyEnabled:   true,
+			L3NLScanEnabled:   true,
+			L2ExemptThreshold: 0.18,
+			L3DetectThreshold: 0.85,
+			CoprocessorSocket: "",
 		},
 		CustomPatterns: []CustomPattern{},
 		Allowlist:      []AllowlistEntry{},
@@ -158,6 +174,12 @@ func Validate(cfg *Config) error {
 	}
 	if cfg.Allowlist == nil {
 		cfg.Allowlist = []AllowlistEntry{}
+	}
+	if cfg.AIFunnel.L2ExemptThreshold <= 0 || cfg.AIFunnel.L2ExemptThreshold >= 0.9 {
+		cfg.AIFunnel.L2ExemptThreshold = 0.18
+	}
+	if cfg.AIFunnel.L3DetectThreshold <= 0.1 || cfg.AIFunnel.L3DetectThreshold > 1.0 {
+		cfg.AIFunnel.L3DetectThreshold = 0.85
 	}
 	return nil
 }

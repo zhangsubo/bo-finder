@@ -27,7 +27,7 @@ struct GatewayView: View {
             if !manager.errorMessage.isEmpty {
                 errorBanner
             }
-            if manager.isDownloadingMitmproxy {
+            if manager.isDownloadingMitmproxy || manager.isDownloadingCoreMLModel {
                 downloadingBanner
             }
 
@@ -164,10 +164,13 @@ struct GatewayView: View {
     }
 
     private var downloadingBanner: some View {
-        HStack(spacing: 10) {
+        let progressText = manager.isDownloadingCoreMLModel
+            ? manager.coreMLDownloadProgressText
+            : manager.downloadProgressText
+        return HStack(spacing: 10) {
             ProgressView()
                 .controlSize(.small)
-            Text(manager.downloadProgressText.isEmpty ? "正在准备组件…" : manager.downloadProgressText)
+            Text(progressText.isEmpty ? "正在准备组件…" : progressText)
                 .font(.callout)
             Spacer()
         }
@@ -182,6 +185,7 @@ struct GatewayView: View {
         VStack(alignment: .leading, spacing: 16) {
             heroControlCard
             kpiGrid
+            threeLayerFunnelCard
             dualEgressCard
         }
     }
@@ -201,7 +205,7 @@ struct GatewayView: View {
                 Text(manager.isDaemonRunning ? "本地双出口安全网关已就绪" : "安全网关当前处于关闭状态")
                     .font(.headline)
                 if let st = manager.daemonStatus, manager.isDaemonRunning {
-                    Text("监听地址 \(st.listenAddr) · 守护进程 PID \(st.pid) · 接入层：\(manager.prefs.selectedTier.title)")
+                    Text("监听 \(st.listenAddr) · PID \(st.pid) · 接入：\(manager.prefs.selectedTier.shortBadge) · AI：\(manager.activeAIModelSummary)")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 } else {
@@ -245,7 +249,9 @@ struct GatewayView: View {
             statCard(
                 title: "大模型无感脱敏",
                 value: "\(manager.stats.maskedCount)",
-                subtitle: "替换为占位符并流式还原",
+                subtitle: manager.stats.l3DetectedCount > 0
+                    ? "含 L3 补漏 \(manager.stats.l3DetectedCount) 次 · 流式还原"
+                    : "替换为占位符并流式还原",
                 symbol: "eye.trianglebadge.exclamationmark",
                 tint: .teal
             )
@@ -257,11 +263,11 @@ struct GatewayView: View {
                 tint: .red
             )
             statCard(
-                title: "联动环境变量密钥",
-                value: "\(envSecretCount)",
-                subtitle: manager.config.syncEnvSecrets ? "纯内存精确匹配已开启" : "联动已暂停",
-                symbol: "key.fill",
-                tint: .orange
+                title: "AI 复核降误报",
+                value: "\(manager.stats.aiExemptedCount)",
+                subtitle: manager.config.syncEnvSecrets ? "联动密钥 \(envSecretCount) 项 · 零明文" : "灰区 Mock 自动放行",
+                symbol: "sparkles",
+                tint: .indigo
             )
         }
     }
@@ -285,6 +291,175 @@ struct GatewayView: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var threeLayerFunnelCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "cpu.fill")
+                    .foregroundColor(.indigo)
+                Text("三层漏斗 AI 协同识别引擎")
+                    .font(.headline)
+                Spacer()
+                Text(manager.activeAIModelSummary)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundColor(.indigo)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Color.indigo.opacity(0.12))
+                    .clipShape(Capsule())
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "bolt.shield.fill")
+                        .foregroundColor(.green)
+                        .font(.callout)
+                        .frame(width: 18)
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text("L1 确定性极速层 (< 0.2ms)")
+                                .font(.callout.weight(.medium))
+                            Text("强制开启 · 零 AI 降级")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundColor(.green)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 1)
+                                .background(Color.green.opacity(0.12))
+                                .clipShape(Capsule())
+                        }
+                        Text("「环境变量」联动密钥 (Aho-Corasick) 与明确厂商前缀 (sk-ant- / ghp_ / AKIA / LTAI / PEM 私钥) 直接拦截或脱敏，绝不因模型判断放行真密钥。")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                Toggle(
+                    "L2 灰区 AI 语义降误报：对通用键值赋值、数据库连接串与 CLI 参数进行上下文复核，自动放行 Mock / 占位符并记录零明文审计",
+                    isOn: Binding(
+                        get: { manager.config.aiFunnel.l2VerifyEnabled },
+                        set: { v in manager.updateConfig { $0.aiFunnel.l2VerifyEnabled = v } }
+                    )
+                )
+                .toggleStyle(.checkbox)
+                .font(.callout)
+
+                Toggle(
+                    "L3 对话自然语言补漏：识别发往大模型的中英文无格式口令（如「密码刚改成 xxx 了」）并替换为 <SECRET_N> 流式还原",
+                    isOn: Binding(
+                        get: { manager.config.aiFunnel.l3NLScanEnabled },
+                        set: { v in manager.updateConfig { $0.aiFunnel.l3NLScanEnabled = v } }
+                    )
+                )
+                .toggleStyle(.checkbox)
+                .font(.callout)
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 9) {
+                Text("端侧混合小模型栈（100% 本机离线推理 · 零明文落盘）")
+                    .font(.subheadline.weight(.semibold))
+
+                // Tier A: Built-in FP16 Tiny CNN
+                HStack(alignment: .center, spacing: 8) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(.green)
+                        .font(.caption)
+                    Text("内置随包微型神经网络 (<100 KB FP16)")
+                        .font(.caption.weight(.medium))
+                    Text("开箱即用 · 零外部依赖")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                }
+
+                // Tier B: Optional Standalone CoreML ANE Model
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: manager.isCoreMLModelInstalled ? "cpu.fill" : "cpu")
+                        .foregroundColor(manager.isCoreMLModelInstalled ? .accentColor : .secondary)
+                        .font(.caption)
+                        .padding(.top, 2)
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 8) {
+                            Text("独立 CoreML 增强小模型 (~630 KB FP16 · 国行通用)")
+                                .font(.caption.weight(.medium))
+                            if manager.isCoreMLModelInstalled {
+                                Text("Apple ANE 已编译就绪")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundColor(.accentColor)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 1)
+                                    .background(Color.accentColor.opacity(0.12))
+                                    .clipShape(Capsule())
+                            }
+                            Spacer()
+                            if manager.isCoreMLModelInstalled {
+                                Toggle(
+                                    "启用增强推理",
+                                    isOn: Binding(
+                                        get: { manager.prefs.useCoreMLEnhancedModel },
+                                        set: { manager.setUseCoreMLEnhancedModel($0) }
+                                    )
+                                )
+                                .toggleStyle(.checkbox)
+                                .font(.caption)
+
+                                Button("移除") {
+                                    manager.deleteCoreMLModel()
+                                }
+                                .controlSize(.mini)
+                            } else {
+                                Button("一键下载并编译 (~1.3 MB)") {
+                                    manager.downloadCoreMLModel()
+                                }
+                                .controlSize(.small)
+                                .buttonStyle(.borderedProminent)
+                                .disabled(manager.isDownloadingCoreMLModel)
+                            }
+                        }
+                        Text("自动从国内镜像源下载开源权重并校验 SHA-256，调用本机 Apple 神经网络引擎 (ANE) 编译加速，无需安装 Ollama/Python，不受国行地区限制。")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                // Tier C: Apple Intelligence FoundationModels Compatibility Probe
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: manager.aiHardwareReport.foundationModelsAvailable ? "checkmark.circle.fill" : "info.circle.fill")
+                        .foregroundColor(manager.aiHardwareReport.foundationModelsAvailable ? .green : .secondary)
+                        .font(.caption)
+                        .padding(.top, 2)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 8) {
+                            Text(manager.aiHardwareReport.statusTitle)
+                                .font(.caption.weight(.medium))
+                            Spacer()
+                            if manager.aiHardwareReport.foundationModelsAvailable {
+                                Toggle(
+                                    "协同复核",
+                                    isOn: Binding(
+                                        get: { manager.prefs.useFoundationModelsWhenAvailable },
+                                        set: { manager.setUseFoundationModelsWhenAvailable($0) }
+                                    )
+                                )
+                                .toggleStyle(.checkbox)
+                                .font(.caption)
+                            }
+                        }
+                        Text(manager.aiHardwareReport.statusDetail)
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
+        .padding(16)
         .background(Color(nsColor: .controlBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 10))
     }
@@ -471,10 +646,11 @@ struct GatewayView: View {
                     Text("全部").tag("all")
                     Text("已脱敏").tag("masked")
                     Text("已阻断").tag("blocked")
+                    Text("AI 放行").tag("ai_exempted")
                     Text("Git 钩子").tag("git")
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 280)
+                .frame(width: 340)
 
                 TextField("搜索域名、规则名或位置…", text: $searchQuery)
                     .textFieldStyle(.roundedBorder)
@@ -522,6 +698,7 @@ struct GatewayView: View {
             switch eventFilter {
             case "masked": if ev.action != "masked" { return false }
             case "blocked": if ev.action != "blocked" { return false }
+            case "ai_exempted": if ev.action != "ai_exempted" { return false }
             case "git": if ev.channel != "git" { return false }
             default: break
             }
@@ -535,20 +712,25 @@ struct GatewayView: View {
     }
 
     private func eventRow(_ ev: GatewayAuditEvent) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: ev.isBlocked ? "hand.raised.circle.fill" : "checkmark.shield.fill")
+        let rowColor: Color = ev.isBlocked ? .red : (ev.isAIExempted ? .indigo : .teal)
+        let rowSymbol: String = ev.isBlocked
+            ? "hand.raised.circle.fill"
+            : (ev.isAIExempted ? "sparkles" : "checkmark.shield.fill")
+
+        return HStack(alignment: .top, spacing: 12) {
+            Image(systemName: rowSymbol)
                 .font(.system(size: 18))
-                .foregroundColor(ev.isBlocked ? .red : .teal)
+                .foregroundColor(rowColor)
                 .padding(.top, 2)
 
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 8) {
                     Text(ev.actionLabel)
                         .font(.caption.weight(.semibold))
-                        .foregroundColor(ev.isBlocked ? .red : .teal)
+                        .foregroundColor(rowColor)
                         .padding(.horizontal, 7)
                         .padding(.vertical, 2)
-                        .background((ev.isBlocked ? Color.red : Color.teal).opacity(0.12))
+                        .background(rowColor.opacity(0.12))
                         .clipShape(Capsule())
 
                     Text(ev.channelLabel)
@@ -557,6 +739,16 @@ struct GatewayView: View {
 
                     Text("\(ev.client) → \(ev.target)")
                         .font(.callout.weight(.medium))
+
+                    if let aiModel = ev.aiModel, !aiModel.isEmpty {
+                        Text(aiModel)
+                            .font(.system(.caption2, design: .monospaced))
+                            .foregroundColor(.indigo)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(Color.indigo.opacity(0.10))
+                            .cornerRadius(4)
+                    }
 
                     if ev.count > 1 {
                         Text("×\(ev.count)")
@@ -584,7 +776,7 @@ struct GatewayView: View {
                             .lineLimit(1)
                     }
                     Spacer()
-                    if !ev.fingerprint.isEmpty && ev.channel != "self-test" {
+                    if !ev.fingerprint.isEmpty && ev.channel != "self-test" && !ev.isAIExempted {
                         Button("加入指纹白名单") {
                             manager.addFingerprintToAllowlist(from: ev)
                         }
@@ -916,9 +1108,9 @@ struct GatewayView: View {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("端到端闭环自检")
+                        Text("端到端闭环自检（含三层漏斗 AI 验收）")
                             .font(.headline)
-                        Text("使用合成测试凭据验证「请求体识别脱敏 → BPE 分片 SSE 流式跨包还原 → 零明文审计」全链路。")
+                        Text("使用合成测试凭据验证「L1 明确前缀脱敏 → L2 Mock 语义降误报放行 → L3 中文无格式口令补漏 → SSE 流式跨包还原」全链路。")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
