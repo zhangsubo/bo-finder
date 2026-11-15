@@ -47,6 +47,7 @@ type StatusResponse struct {
 	DefaultLLMAction string           `json:"defaultLLMAction"`
 	KnownSecretCount int              `json:"knownSecretCount"`
 	ActiveVaultItems int              `json:"activeVaultItems"`
+	ActiveAIModel    string           `json:"activeAIModel"`
 	CACertPath       string           `json:"caCertPath"`
 	CAFingerprint    string           `json:"caFingerprint"`
 	Stats            audit.DailyStats `json:"stats"`
@@ -167,6 +168,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		DefaultLLMAction: cfg.DefaultLLMAction,
 		KnownSecretCount: s.engine.KnownSecretCount(),
 		ActiveVaultItems: s.vault.ActiveCount(),
+		ActiveAIModel:    s.engine.ActiveAIModel(),
 		CACertPath:       s.ca.CertPath(),
 		CAFingerprint:    s.ca.FingerprintSHA256(),
 		Stats:            s.ledger.Stats(),
@@ -280,16 +282,36 @@ func (s *Server) handleSelfTest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	// Run an isolated synthetic end-to-end mask + multi-chunk SSE restore verification.
+	// Run an isolated synthetic end-to-end 3-Layer Funnel (L1 + L2 + L3) + multi-chunk SSE restore verification.
+	cfg := s.store.Get()
 	testVault := masker.NewVault(2 * time.Minute)
 	syntheticSecret := "sk-ant-" + "api03-DeskSideSelfTestSyntheticKey9988776655"
-	reqJSON := []byte(fmt.Sprintf(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"Check key %s"}]}`, syntheticSecret))
+	syntheticMock := "mock_secret_for_unit_test"
+	syntheticNLPwd := "Qingdao#" + "SelfTest99!"
 
-	maskedBytes, hits, modified := masker.InspectAndMaskJSON(reqJSON, s.engine, testVault, true)
-	if !modified || len(hits) == 0 || strings.Contains(string(maskedBytes), syntheticSecret) {
+	promptContent := fmt.Sprintf("Check key %s; mock_api_key=%q; 密码刚改成%s了", syntheticSecret, syntheticMock, syntheticNLPwd)
+	reqJSON := []byte(fmt.Sprintf(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":%q}]}`, promptContent))
+
+	maskedBytes, hits, exempted, modified := masker.InspectAndMaskJSONDetailed(reqJSON, s.engine, testVault, true)
+	maskedStr := string(maskedBytes)
+	if !modified || len(hits) == 0 || strings.Contains(maskedStr, syntheticSecret) {
 		writeJSON(w, http.StatusOK, SelfTestResponse{
 			Passed:  false,
-			Message: "自检失败：未能对测试凭据完成请求体脱敏替换。",
+			Message: "自检失败：未能对 L1 测试凭据完成请求体脱敏替换。",
+		})
+		return
+	}
+	if cfg.AIFunnel.L2VerifyEnabled && (len(exempted) == 0 || !strings.Contains(maskedStr, syntheticMock)) {
+		writeJSON(w, http.StatusOK, SelfTestResponse{
+			Passed:  false,
+			Message: "自检失败：L2 灰区 AI 未对单测假密钥执行自动降误报放行。",
+		})
+		return
+	}
+	if cfg.AIFunnel.L3NLScanEnabled && strings.Contains(maskedStr, syntheticNLPwd) {
+		writeJSON(w, http.StatusOK, SelfTestResponse{
+			Passed:  false,
+			Message: "自检失败：L3 自然语言口令识别未能捕获对话中的无格式密码。",
 		})
 		return
 	}
@@ -308,6 +330,12 @@ func (s *Server) handleSelfTest(w http.ResponseWriter, r *http.Request) {
 	restoredRaw, err := io.ReadAll(restorer)
 	passed := err == nil && strings.Contains(string(restoredRaw), syntheticSecret+"!")
 
+	var ruleNames []string
+	for _, h := range hits {
+		ruleNames = append(ruleNames, h.RuleName)
+	}
+	triggeredSummary := strings.Join(ruleNames, " + ")
+
 	if passed {
 		s.ledger.Record(audit.Event{
 			Timestamp:     time.Now(),
@@ -316,24 +344,25 @@ func (s *Server) handleSelfTest(w http.ResponseWriter, r *http.Request) {
 			Target:        "diagnostic://self-test",
 			Client:        "DeskSide 自检",
 			Category:      hits[0].Category,
-			RuleName:      hits[0].RuleName,
+			RuleName:      triggeredSummary,
 			MaskedPreview: hits[0].MaskedPreview,
 			Fingerprint:   hits[0].Fingerprint,
 			Location:      "messages[0].content",
-			Count:         1,
+			AIModel:       s.engine.ActiveAIModel(),
+			Count:         len(hits),
 		})
 	}
 
-	msg := "自检通过：多源识别、请求脱敏与跨 Token SSE 流式还原均工作正常。"
+	msg := fmt.Sprintf("自检通过：L1 精确脱敏、L2 灰区降误报、L3 自然语言补漏与 SSE 流式还原均正常（AI 引擎：%s）。", s.engine.ActiveAIModel())
 	if !passed {
 		msg = "自检失败：SSE 流式跨包还原结果不匹配。"
 	}
 
 	writeJSON(w, http.StatusOK, SelfTestResponse{
 		Passed:        passed,
-		MaskedPayload: string(maskedBytes),
+		MaskedPayload: maskedStr,
 		RestoredText:  "Key is [已还原原始凭据]!",
-		RuleTriggered: hits[0].RuleName,
+		RuleTriggered: triggeredSummary,
 		GitCheckReady: true,
 		Message:       msg,
 	})
@@ -347,13 +376,20 @@ func (s *Server) handleInternalScan(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Text     string `json:"text"`
 		FilePath string `json:"filePath"`
+		Channel  string `json:"channel"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 8*1024*1024)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	findings := s.engine.Analyze(req.Text, detector.ScanOptions{FilePath: req.FilePath})
-	writeJSON(w, http.StatusOK, map[string]any{"findings": findings})
+	findings, aiExempted := s.engine.AnalyzeDetailed(req.Text, detector.ScanOptions{
+		FilePath: req.FilePath,
+		Channel:  req.Channel,
+	})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"findings":   findings,
+		"aiExempted": aiExempted,
+	})
 }
 
 func (s *Server) handleInternalEvent(w http.ResponseWriter, r *http.Request) {

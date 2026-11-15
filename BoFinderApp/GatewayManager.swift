@@ -20,6 +20,11 @@ final class GatewayManager: ObservableObject {
     @Published private(set) var isDownloadingMitmproxy: Bool = false
     @Published private(set) var downloadProgressText: String = ""
 
+    @Published private(set) var aiHardwareReport: GatewayAIHardwareReport = GatewayAIHardwareReport.probe()
+    @Published private(set) var isCoreMLModelInstalled: Bool = false
+    @Published private(set) var isDownloadingCoreMLModel: Bool = false
+    @Published private(set) var coreMLDownloadProgressText: String = ""
+
     @Published private(set) var hasSurgeInstalled: Bool = false
     @Published private(set) var detectedMitmproxyPath: String? = nil
     @Published private(set) var isGitHookMounted: Bool = false
@@ -46,6 +51,7 @@ final class GatewayManager: ObservableObject {
     let mitmAddonFileURL: URL
     let gitHooksDirURL: URL
     let managedMitmproxyDirURL: URL
+    let aiEngine: GatewayAIEngine
 
     private let ioQueue = DispatchQueue(label: "com.bofinder.deskside.gateway-io", qos: .userInitiated)
     private var daemonProcess: Process?
@@ -93,8 +99,11 @@ final class GatewayManager: ObservableObject {
         self.hopRouterJSFileURL = guardStateDirURL.appendingPathComponent("hop-router.js")
         self.mitmAddonFileURL = guardStateDirURL.appendingPathComponent("deskside-mitm-addon.py")
         self.gitHooksDirURL = guardStateDirURL.appendingPathComponent("git-hooks", isDirectory: true)
+        self.aiEngine = GatewayAIEngine(appSupportDirURL: appSupportDirURL, guardStateDirURL: guardStateDirURL)
 
         loadPreferencesFromDisk()
+        self.aiEngine.setAllowCoreML(prefs.useCoreMLEnhancedModel)
+        self.aiEngine.setAllowFoundationModels(prefs.useFoundationModelsWhenAvailable)
         loadCachedGuardConfigIfPresent()
         refreshEnvironmentCapabilities()
 
@@ -121,6 +130,7 @@ final class GatewayManager: ObservableObject {
         pollTimer = nil
 
         // Always restore Surge router to passthrough & rollback system PAC proxy on exit.
+        aiEngine.stopCoprocessor()
         writeSurgeArtifacts(enabled: false)
         stopMitmproxyHelper()
         if !prefs.savedProxySnapshots.isEmpty {
@@ -243,6 +253,7 @@ final class GatewayManager: ObservableObject {
         pollTimer?.invalidate()
         pollTimer = nil
 
+        aiEngine.stopCoprocessor()
         deactivateCurrentTierCapture()
 
         if let proc = daemonProcess, proc.isRunning {
@@ -283,6 +294,8 @@ final class GatewayManager: ObservableObject {
                     withIntermediateDirectories: true,
                     attributes: [.posixPermissions: 0o700]
                 )
+
+                self.syncAICoprocessorSocketSync()
 
                 // Check if daemon is already responsive on admin.sock; if not, launch child process.
                 if self.fetchStatusSync() == nil {
@@ -1153,6 +1166,129 @@ final class GatewayManager: ObservableObject {
         savePreferencesToDisk()
     }
 
+    // MARK: - Hybrid 3-Layer Funnel AI Engine Controls
+
+    var activeAIModelSummary: String {
+        let code = daemonStatus?.activeAIModel ?? aiEngine.activeModelLabel()
+        switch code {
+        case "coreml-ane+foundation-models":
+            return "CoreML ANE 增强模型 + FoundationModels 协同"
+        case "coreml-ane-large":
+            return "独立 CoreML 增强小模型 (Apple ANE 加速)"
+        case "foundation-models":
+            return "Apple Intelligence (FoundationModels)"
+        default:
+            return "内置随包微型神经网络 (<100 KB · 零外部依赖)"
+        }
+    }
+
+    private func syncAICoprocessorSocketSync() {
+        aiEngine.setAllowCoreML(prefs.useCoreMLEnhancedModel)
+        aiEngine.setAllowFoundationModels(prefs.useFoundationModelsWhenAvailable)
+        if prefs.useCoreMLEnhancedModel && aiEngine.isCoreMLModelInstalled {
+            _ = aiEngine.reloadCoreMLIfPresent()
+        }
+        let shouldRunCoproc = (prefs.useCoreMLEnhancedModel && aiEngine.isCoreMLModelInstalled)
+            || (prefs.useFoundationModelsWhenAvailable && aiHardwareReport.foundationModelsAvailable)
+
+        if shouldRunCoproc {
+            _ = aiEngine.startCoprocessorIfEligible()
+        } else {
+            aiEngine.stopCoprocessor()
+        }
+    }
+
+    func setUseCoreMLEnhancedModel(_ enabled: Bool) {
+        prefs.useCoreMLEnhancedModel = enabled
+        savePreferencesToDisk()
+        aiEngine.setAllowCoreML(enabled)
+        ioQueue.async { [weak self] in
+            guard let self = self else { return }
+            if self.isDaemonRunning {
+                self.syncAICoprocessorSocketSync()
+            } else if !enabled {
+                self.aiEngine.stopCoprocessor()
+            }
+            let st = self.isDaemonRunning ? self.fetchStatusSync() : nil
+            DispatchQueue.main.async {
+                if let st = st { self.daemonStatus = st }
+            }
+        }
+    }
+
+    func setUseFoundationModelsWhenAvailable(_ enabled: Bool) {
+        prefs.useFoundationModelsWhenAvailable = enabled
+        savePreferencesToDisk()
+        aiEngine.setAllowFoundationModels(enabled)
+        if isDaemonRunning {
+            ioQueue.async { [weak self] in
+                guard let self = self else { return }
+                self.syncAICoprocessorSocketSync()
+                if let st = self.fetchStatusSync() {
+                    DispatchQueue.main.async { self.daemonStatus = st }
+                }
+            }
+        }
+    }
+
+    func downloadCoreMLModel() {
+        guard !isDownloadingCoreMLModel else { return }
+        isDownloadingCoreMLModel = true
+        coreMLDownloadProgressText = "正在连接国内加速镜像下载 CoreML 增强模型…"
+        errorMessage = ""
+
+        aiEngine.downloadAndCompileCoreMLModel(
+            progress: { [weak self] text in
+                self?.coreMLDownloadProgressText = text
+            },
+            completion: { [weak self] result in
+                guard let self = self else { return }
+                self.isDownloadingCoreMLModel = false
+                self.coreMLDownloadProgressText = ""
+                switch result {
+                case .success:
+                    self.isCoreMLModelInstalled = self.aiEngine.isCoreMLModelInstalled
+                    self.prefs.useCoreMLEnhancedModel = true
+                    self.savePreferencesToDisk()
+                    if self.isDaemonRunning {
+                        self.ioQueue.async {
+                            self.syncAICoprocessorSocketSync()
+                            if let st = self.fetchStatusSync() {
+                                DispatchQueue.main.async { self.daemonStatus = st }
+                            }
+                        }
+                    }
+                    self.statusBanner = "已安装并启用独立 CoreML ANE 增强小模型"
+                    if self.prefs.showHUDNotifications {
+                        HUDWindowController.shared.show(
+                            title: "CoreML 增强小模型已启用",
+                            subtitle: "Apple 神经网络引擎 (ANE) 已接管灰区降误报与自然语言识别",
+                            symbolName: "cpu.fill"
+                        )
+                    }
+                case .failure(let err):
+                    self.errorMessage = err.localizedDescription
+                }
+            }
+        )
+    }
+
+    func deleteCoreMLModel() {
+        aiEngine.stopCoprocessor()
+        aiEngine.removeCoreMLModel()
+        isCoreMLModelInstalled = aiEngine.isCoreMLModelInstalled
+        if isDaemonRunning {
+            ioQueue.async { [weak self] in
+                guard let self = self else { return }
+                self.syncAICoprocessorSocketSync()
+                if let st = self.fetchStatusSync() {
+                    DispatchQueue.main.async { self.daemonStatus = st }
+                }
+            }
+        }
+        statusBanner = "已移除独立 CoreML 增强模型，自动回退至内置随包微型模型"
+    }
+
     // MARK: - Environment Probing
 
     func refreshEnvironmentCapabilities() {
@@ -1179,6 +1315,8 @@ final class GatewayManager: ObservableObject {
         }
 
         let discoveredAgentTargets = GatewayAgentRulesSyncer.discoverTargets(homeDirectory: homeDirectory, fileManager: fm)
+        let hwReport = aiEngine.refreshHardwareReport()
+        let coreMLReady = aiEngine.isCoreMLModelInstalled
 
         let assign = {
             self.hasSurgeInstalled = surgeExists
@@ -1186,6 +1324,8 @@ final class GatewayManager: ObservableObject {
             self.isGitHookMounted = gitMounted
             self.isCACertTrusted = caTrusted
             self.agentRuleTargets = discoveredAgentTargets
+            self.aiHardwareReport = hwReport
+            self.isCoreMLModelInstalled = coreMLReady
         }
         if Thread.isMainThread {
             assign()
@@ -1497,11 +1637,21 @@ final class GatewayManager: ObservableObject {
         }
         if ev.action == "masked" {
             stats.maskedCount += ev.count
+            if ev.category == "AI_NL_SECRET" {
+                stats.l3DetectedCount += ev.count
+            }
         } else if ev.action == "blocked" {
             stats.blockedCount += ev.count
             if ev.channel == "git" {
                 stats.gitBlockedCount += ev.count
             }
+            if ev.category == "AI_NL_SECRET" {
+                stats.l3DetectedCount += ev.count
+            }
+        } else if ev.action == "ai_exempted" {
+            stats.aiExemptedCount += ev.count
+            // Silent false-positive exemption: record in audit timeline without popping intrusive HUD toast.
+            return
         }
 
         guard prefs.showHUDNotifications, ev.channel != "self-test" else { return }

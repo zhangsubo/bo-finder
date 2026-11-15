@@ -166,13 +166,21 @@ type HitSummary struct {
 	MaskedPreview string
 	Fingerprint   string
 	Location      string
+	AIModel       string
 }
 
 // InspectAndMaskJSON parses an LLM JSON request payload, scans user/tool content fields,
 // and when maskMode == true replaces detected secrets with session placeholders.
 func InspectAndMaskJSON(rawBody []byte, engine *detector.Engine, vault *Vault, maskMode bool) ([]byte, []HitSummary, bool) {
+	rewritten, hits, _, modified := InspectAndMaskJSONDetailed(rawBody, engine, vault, maskMode)
+	return rewritten, hits, modified
+}
+
+// InspectAndMaskJSONDetailed executes the 3-layer funnel (`Channel: "llm"`) across an LLM payload,
+// returning masked/blocked hits AND L2 AI-exempted false positives for zero-plaintext audit logging.
+func InspectAndMaskJSONDetailed(rawBody []byte, engine *detector.Engine, vault *Vault, maskMode bool) ([]byte, []HitSummary, []HitSummary, bool) {
 	if len(rawBody) == 0 || len(rawBody) > maxInspectPayload {
-		return rawBody, nil, false
+		return rawBody, nil, nil, false
 	}
 
 	var root any
@@ -181,9 +189,20 @@ func InspectAndMaskJSON(rawBody []byte, engine *detector.Engine, vault *Vault, m
 	if err := dec.Decode(&root); err != nil {
 		// Fallback for plain text / multipart non-JSON bodies: scan raw string directly.
 		text := string(rawBody)
-		findings := engine.Analyze(text, detector.ScanOptions{})
+		findings, exFindings := engine.AnalyzeDetailed(text, detector.ScanOptions{Channel: "llm"})
+		var exempted []HitSummary
+		for _, ef := range exFindings {
+			exempted = append(exempted, HitSummary{
+				Category:      ef.Category,
+				RuleName:      ef.RuleName,
+				MaskedPreview: ef.MaskedPreview,
+				Fingerprint:   ef.Fingerprint,
+				Location:      "body",
+				AIModel:       ef.AIModel,
+			})
+		}
 		if len(findings) == 0 {
-			return rawBody, nil, false
+			return rawBody, nil, exempted, false
 		}
 		var hits []HitSummary
 		var sb strings.Builder
@@ -195,6 +214,7 @@ func InspectAndMaskJSON(rawBody []byte, engine *detector.Engine, vault *Vault, m
 				MaskedPreview: f.MaskedPreview,
 				Fingerprint:   f.Fingerprint,
 				Location:      "body",
+				AIModel:       f.AIModel,
 			})
 			if maskMode && vault != nil {
 				sb.WriteString(text[cursor:f.Start])
@@ -203,13 +223,14 @@ func InspectAndMaskJSON(rawBody []byte, engine *detector.Engine, vault *Vault, m
 			}
 		}
 		if !maskMode || vault == nil {
-			return rawBody, hits, false
+			return rawBody, hits, exempted, false
 		}
 		sb.WriteString(text[cursor:])
-		return []byte(sb.String()), hits, true
+		return []byte(sb.String()), hits, exempted, true
 	}
 
 	var hits []HitSummary
+	var exempted []HitSummary
 	modified := false
 
 	var walk func(node any, path string, parentKey string) any
@@ -256,7 +277,17 @@ func InspectAndMaskJSON(rawBody []byte, engine *detector.Engine, vault *Vault, m
 			if strings.HasPrefix(path, "tools[") {
 				return val
 			}
-			findings := engine.Analyze(val, detector.ScanOptions{})
+			findings, exFindings := engine.AnalyzeDetailed(val, detector.ScanOptions{Channel: "llm"})
+			for _, ef := range exFindings {
+				exempted = append(exempted, HitSummary{
+					Category:      ef.Category,
+					RuleName:      ef.RuleName,
+					MaskedPreview: ef.MaskedPreview,
+					Fingerprint:   ef.Fingerprint,
+					Location:      path,
+					AIModel:       ef.AIModel,
+				})
+			}
 			if len(findings) == 0 {
 				return val
 			}
@@ -267,6 +298,7 @@ func InspectAndMaskJSON(rawBody []byte, engine *detector.Engine, vault *Vault, m
 					MaskedPreview: f.MaskedPreview,
 					Fingerprint:   f.Fingerprint,
 					Location:      path,
+					AIModel:       f.AIModel,
 				})
 			}
 			if !maskMode || vault == nil {
@@ -291,14 +323,14 @@ func InspectAndMaskJSON(rawBody []byte, engine *detector.Engine, vault *Vault, m
 
 	root = walk(root, "", "")
 	if !modified {
-		return rawBody, hits, false
+		return rawBody, hits, exempted, false
 	}
 
 	encoded, err := marshalUnescapedJSON(root)
 	if err != nil {
-		return rawBody, hits, false
+		return rawBody, hits, exempted, false
 	}
-	return encoded, hits, true
+	return encoded, hits, exempted, true
 }
 
 func marshalUnescapedJSON(v any) ([]byte, error) {

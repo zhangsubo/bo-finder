@@ -17,6 +17,7 @@ const (
 	CategoryAuthToken     = "AUTH_TOKEN"
 	CategoryDBURI         = "DB_URI"
 	CategoryContextSecret = "CONTEXT_SECRET"
+	CategoryAISecret      = "AI_NL_SECRET"
 	CategoryCustom        = "CUSTOM"
 )
 
@@ -43,6 +44,8 @@ type Finding struct {
 	Score         float64 `json:"score"`
 	MaskedPreview string  `json:"maskedPreview"`
 	Fingerprint   string  `json:"fingerprint"`
+	AIModel       string  `json:"aiModel,omitempty"`
+	AIReason      string  `json:"aiReason,omitempty"`
 }
 
 type KnownSecretInput struct {
@@ -52,6 +55,7 @@ type KnownSecretInput struct {
 
 type ScanOptions struct {
 	FilePath string
+	Channel  string // "llm" | "github" | "git" | ""
 }
 
 // MaskValue produces a safe zero-plaintext preview (e.g. "sk-proj-****9a2f").

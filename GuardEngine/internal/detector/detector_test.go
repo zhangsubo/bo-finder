@@ -2,6 +2,7 @@ package detector
 
 import (
 	"encoding/base64"
+	"fmt"
 	"net/url"
 	"strings"
 	"testing"
@@ -180,5 +181,54 @@ func TestFalsePositiveExemptionsAndAllowlist(t *testing.T) {
 	}
 	if hits := eng.Analyze("ghp_"+"1234567890abcdefghijklmnopqrstuvwx", ScanOptions{FilePath: "Tests/fixtures/mock.env"}); len(hits) != 0 {
 		t.Fatalf("expected allowlisted path to skip findings, got %+v", hits)
+	}
+}
+
+func TestThreeLayerFunnelL1StrictL2MockExemptionAndL3NLDetection(t *testing.T) {
+	cfg := config.Default()
+	eng := NewEngine(cfg)
+
+	l1Vendor := "sk-ant-" + "api03-StrictVendorPrefixMustNeverDowngrade123"
+	l2Mock := "mock_secret_for_unit_test"
+	l2Real := "Qingdao#" + "Prod9981!"
+	l3ChatPwd := "Xm9@" + "Server2026"
+
+	// 1. Code file scan (`Channel: "git"`): L1 vendor + L2 real kept; L2 mock auto-exempted in `aiExempted`!
+	codeSample := fmt.Sprintf(
+		"const %s = %q\nconst %s = %q\nconst %s = %q",
+		"vendor", l1Vendor,
+		"mock_"+"api_key", l2Mock,
+		"prod_"+"password", l2Real,
+	)
+
+	kept, exempted := eng.AnalyzeDetailed(codeSample, ScanOptions{FilePath: "service_test.go", Channel: "git"})
+	if len(kept) != 2 {
+		t.Fatalf("expected 2 kept findings (L1 vendor + L2 real), got %d: %+v", len(kept), kept)
+	}
+	if len(exempted) != 1 || exempted[0].RuleName != "CONTEXT_KEY_SECRET" {
+		t.Fatalf("expected 1 L2 AI-exempted finding for mock_api_key, got %+v", exempted)
+	}
+
+	// 2. LLM prompt scan (`Channel: "llm"`): L3 catches unformatted Chinese prose password!
+	chatSample := "帮我连一下 10.0.1.8，线上 Redis 口令刚改成" + l3ChatPwd + "了，报错是 timeout_error。"
+	llmKept, _ := eng.AnalyzeDetailed(chatSample, ScanOptions{Channel: "llm"})
+	if len(llmKept) != 1 || llmKept[0].Category != CategoryAISecret || llmKept[0].RuleName != "AI_NL_SECRET" {
+		t.Fatalf("expected 1 L3 AI_NL_SECRET finding on LLM channel, got %+v", llmKept)
+	}
+	if got := chatSample[llmKept[0].Start:llmKept[0].End]; got != l3ChatPwd {
+		t.Fatalf("L3 span mismatch: got %q, want %q", got, l3ChatPwd)
+	}
+
+	// 3. Disabling L2/L3 toggles restores pure rule-based behavior.
+	cfg.AIFunnel.L2VerifyEnabled = false
+	cfg.AIFunnel.L3NLScanEnabled = false
+	eng.UpdateConfig(cfg)
+
+	keptNoAI, exemptedNoAI := eng.AnalyzeDetailed(codeSample, ScanOptions{FilePath: "service_test.go", Channel: "git"})
+	if len(keptNoAI) != 3 || len(exemptedNoAI) != 0 {
+		t.Fatalf("with L2 disabled, expected 3 kept & 0 exempted, got %d kept / %d exempted", len(keptNoAI), len(exemptedNoAI))
+	}
+	if llmNoL3 := eng.Analyze(chatSample, ScanOptions{Channel: "llm"}); len(llmNoL3) != 0 {
+		t.Fatalf("with L3 disabled, expected 0 prose findings, got %+v", llmNoL3)
 	}
 }

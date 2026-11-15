@@ -38,15 +38,18 @@ type Hit struct {
 	RuleName      string
 	MaskedPreview string
 	Fingerprint   string
+	AIModel       string
 }
 
 type internalScanRequest struct {
 	Text     string `json:"text"`
 	FilePath string `json:"filePath"`
+	Channel  string `json:"channel,omitempty"`
 }
 
 type internalScanResponse struct {
-	Findings []detector.Finding `json:"findings"`
+	Findings   []detector.Finding `json:"findings"`
+	AIExempted []detector.Finding `json:"aiExempted,omitempty"`
 }
 
 // RunPrePush inspects all commits about to be pushed to a remote, blocks on any secret hit,
@@ -69,6 +72,7 @@ func RunPrePush(stateDir, repoDir, remoteName, remoteURL string, stdin io.Reader
 	}
 
 	var allHits []Hit
+	var allExempted []Hit
 	lineScanner := bufio.NewScanner(bytes.NewReader(rawStdin))
 	for lineScanner.Scan() {
 		fields := strings.Fields(lineScanner.Text())
@@ -96,13 +100,17 @@ func RunPrePush(stateDir, repoDir, remoteName, remoteURL string, stdin io.Reader
 		if gitErr != nil || len(diffOut) == 0 {
 			continue
 		}
-		hits := sc.scanUnifiedDiff(diffOut, "")
+		hits, exHits := sc.scanUnifiedDiff(diffOut, "")
 		allHits = append(allHits, hits...)
+		allExempted = append(allExempted, exHits...)
 		if len(allHits) >= 25 {
 			break
 		}
 	}
 
+	if len(allExempted) > 0 {
+		sc.reportHitsWithAction("ai_exempted", "Git Push", target, allExempted)
+	}
 	if len(allHits) > 0 {
 		sc.reportBlockedHits("Git Push", target, allHits)
 		printBlockBanner(stderr, "git push", target, allHits)
@@ -119,7 +127,10 @@ func RunPreCommit(stateDir, repoDir string, stderr io.Writer) int {
 
 	diffOut, err := runGitOutput(repoDir, "diff", "--cached", "--no-color", "-U0")
 	if err == nil && len(diffOut) > 0 {
-		hits := sc.scanUnifiedDiff(diffOut, "staged")
+		hits, exHits := sc.scanUnifiedDiff(diffOut, "staged")
+		if len(exHits) > 0 {
+			sc.reportHitsWithAction("ai_exempted", "Git Commit", "staged", exHits)
+		}
 		if len(hits) > 0 {
 			sc.reportBlockedHits("Git Commit", "staged", hits)
 			printBlockBanner(stderr, "git commit", "staged index", hits)
@@ -223,7 +234,7 @@ func newScanner(stateDir string) *diffScanner {
 	return &diffScanner{
 		stateDir:    stateDir,
 		sockPath:    sockPath,
-		localEngine: detector.NewEngine(cfg),
+		localEngine: detector.NewEngineWithStateDir(cfg, stateDir),
 		unixClient: &http.Client{
 			Transport: transport,
 			Timeout:   250 * time.Millisecond,
@@ -231,14 +242,15 @@ func newScanner(stateDir string) *diffScanner {
 	}
 }
 
-func (s *diffScanner) analyzeText(text, filePath string) []detector.Finding {
+func (s *diffScanner) analyzeText(text, filePath string) ([]detector.Finding, []detector.Finding) {
 	if strings.TrimSpace(text) == "" {
-		return nil
+		return nil, nil
 	}
 	// Prefer live daemon scan so DeskSide EnvManager secrets in daemon memory are included!
 	reqPayload, err := json.Marshal(internalScanRequest{
 		Text:     text,
 		FilePath: filePath,
+		Channel:  "git",
 	})
 	if err == nil {
 		resp, postErr := s.unixClient.Post("http://unix/v1/internal/scan", "application/json", bytes.NewReader(reqPayload))
@@ -247,16 +259,17 @@ func (s *diffScanner) analyzeText(text, filePath string) []detector.Finding {
 			if resp.StatusCode == http.StatusOK {
 				var parsed internalScanResponse
 				if decErr := json.NewDecoder(resp.Body).Decode(&parsed); decErr == nil {
-					return parsed.Findings
+					return parsed.Findings, parsed.AIExempted
 				}
 			}
 		}
 	}
-	return s.localEngine.Analyze(text, detector.ScanOptions{FilePath: filePath})
+	return s.localEngine.AnalyzeDetailed(text, detector.ScanOptions{FilePath: filePath, Channel: "git"})
 }
 
-func (s *diffScanner) scanUnifiedDiff(diffBytes []byte, defaultCommit string) []Hit {
+func (s *diffScanner) scanUnifiedDiff(diffBytes []byte, defaultCommit string) ([]Hit, []Hit) {
 	var hits []Hit
+	var exempted []Hit
 	currentCommit := defaultCommit
 	currentFile := ""
 	currentNewLine := 0
@@ -269,13 +282,13 @@ func (s *diffScanner) scanUnifiedDiff(diffBytes []byte, defaultCommit string) []
 			return
 		}
 		joined := strings.Join(addedLines, "\n")
-		findings := s.analyzeText(joined, currentFile)
-		for _, f := range findings {
+		findings, exFindings := s.analyzeText(joined, currentFile)
+		toHit := func(f detector.Finding) Hit {
 			lineOffset := 0
 			if f.Start > 0 && f.Start <= len(joined) {
 				lineOffset = strings.Count(joined[:f.Start], "\n")
 			}
-			hits = append(hits, Hit{
+			return Hit{
 				Commit:        currentCommit,
 				FilePath:      currentFile,
 				Line:          blockStartLine + lineOffset,
@@ -283,7 +296,14 @@ func (s *diffScanner) scanUnifiedDiff(diffBytes []byte, defaultCommit string) []
 				RuleName:      f.RuleName,
 				MaskedPreview: f.MaskedPreview,
 				Fingerprint:   f.Fingerprint,
-			})
+				AIModel:       f.AIModel,
+			}
+		}
+		for _, f := range findings {
+			hits = append(hits, toHit(f))
+		}
+		for _, ef := range exFindings {
+			exempted = append(exempted, toHit(ef))
 		}
 		addedLines = addedLines[:0]
 	}
@@ -345,7 +365,7 @@ func (s *diffScanner) scanUnifiedDiff(diffBytes []byte, defaultCommit string) []
 	}
 	flushAddedBlock()
 
-	return hits
+	return hits, exempted
 }
 
 func (s *diffScanner) recordGitScan() {
@@ -360,6 +380,10 @@ func (s *diffScanner) recordGitScan() {
 }
 
 func (s *diffScanner) reportBlockedHits(clientName, target string, hits []Hit) {
+	s.reportHitsWithAction("blocked", clientName, target, hits)
+}
+
+func (s *diffScanner) reportHitsWithAction(action, clientName, target string, hits []Hit) {
 	var offlineLedger *audit.Ledger
 	for _, h := range hits {
 		loc := fmt.Sprintf("%s:%d", h.FilePath, h.Line)
@@ -369,7 +393,7 @@ func (s *diffScanner) reportBlockedHits(clientName, target string, hits []Hit) {
 		ev := audit.Event{
 			Timestamp:     time.Now(),
 			Channel:       "git",
-			Action:        "blocked",
+			Action:        action,
 			Target:        target,
 			Client:        clientName,
 			Category:      h.Category,
@@ -377,6 +401,7 @@ func (s *diffScanner) reportBlockedHits(clientName, target string, hits []Hit) {
 			MaskedPreview: h.MaskedPreview,
 			Fingerprint:   h.Fingerprint,
 			Location:      loc,
+			AIModel:       h.AIModel,
 			Count:         1,
 		}
 		if !s.postEventToDaemon(ev) {

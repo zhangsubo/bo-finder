@@ -92,6 +92,8 @@ struct GatewayLocalPreferences: Codable, Equatable {
     var didOverrideGitHooksPath: Bool = false
     var savedProxySnapshots: [GatewayNetworkServiceProxySnapshot] = []
     var mitmproxyBinaryPath: String? = nil
+    var useCoreMLEnhancedModel: Bool = true
+    var useFoundationModelsWhenAvailable: Bool = true
 
     enum CodingKeys: String, CodingKey {
         case isEnabled
@@ -105,6 +107,8 @@ struct GatewayLocalPreferences: Codable, Equatable {
         case didOverrideGitHooksPath
         case savedProxySnapshots
         case mitmproxyBinaryPath
+        case useCoreMLEnhancedModel
+        case useFoundationModelsWhenAvailable
     }
 
     init(
@@ -118,7 +122,9 @@ struct GatewayLocalPreferences: Codable, Equatable {
         previousGitHooksPath: String? = nil,
         didOverrideGitHooksPath: Bool = false,
         savedProxySnapshots: [GatewayNetworkServiceProxySnapshot] = [],
-        mitmproxyBinaryPath: String? = nil
+        mitmproxyBinaryPath: String? = nil,
+        useCoreMLEnhancedModel: Bool = true,
+        useFoundationModelsWhenAvailable: Bool = true
     ) {
         self.isEnabled = isEnabled
         self.selectedTier = selectedTier
@@ -131,6 +137,8 @@ struct GatewayLocalPreferences: Codable, Equatable {
         self.didOverrideGitHooksPath = didOverrideGitHooksPath
         self.savedProxySnapshots = savedProxySnapshots
         self.mitmproxyBinaryPath = mitmproxyBinaryPath
+        self.useCoreMLEnhancedModel = useCoreMLEnhancedModel
+        self.useFoundationModelsWhenAvailable = useFoundationModelsWhenAvailable
     }
 
     init(from decoder: Decoder) throws {
@@ -146,6 +154,8 @@ struct GatewayLocalPreferences: Codable, Equatable {
         self.didOverrideGitHooksPath = try c.decodeIfPresent(Bool.self, forKey: .didOverrideGitHooksPath) ?? false
         self.savedProxySnapshots = try c.decodeIfPresent([GatewayNetworkServiceProxySnapshot].self, forKey: .savedProxySnapshots) ?? []
         self.mitmproxyBinaryPath = try c.decodeIfPresent(String.self, forKey: .mitmproxyBinaryPath)
+        self.useCoreMLEnhancedModel = try c.decodeIfPresent(Bool.self, forKey: .useCoreMLEnhancedModel) ?? true
+        self.useFoundationModelsWhenAvailable = try c.decodeIfPresent(Bool.self, forKey: .useFoundationModelsWhenAvailable) ?? true
     }
 }
 
@@ -301,6 +311,45 @@ enum GatewayAllowlistBatchParser {
     }
 }
 
+struct GatewayAIFunnelConfig: Codable, Equatable {
+    var l2VerifyEnabled: Bool = true
+    var l3NLScanEnabled: Bool = true
+    var l2ExemptThreshold: Double = 0.18
+    var l3DetectThreshold: Double = 0.85
+    var coprocessorSocket: String = ""
+
+    enum CodingKeys: String, CodingKey {
+        case l2VerifyEnabled
+        case l3NLScanEnabled
+        case l2ExemptThreshold
+        case l3DetectThreshold
+        case coprocessorSocket
+    }
+
+    init(
+        l2VerifyEnabled: Bool = true,
+        l3NLScanEnabled: Bool = true,
+        l2ExemptThreshold: Double = 0.18,
+        l3DetectThreshold: Double = 0.85,
+        coprocessorSocket: String = ""
+    ) {
+        self.l2VerifyEnabled = l2VerifyEnabled
+        self.l3NLScanEnabled = l3NLScanEnabled
+        self.l2ExemptThreshold = l2ExemptThreshold
+        self.l3DetectThreshold = l3DetectThreshold
+        self.coprocessorSocket = coprocessorSocket
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.l2VerifyEnabled = try c.decodeIfPresent(Bool.self, forKey: .l2VerifyEnabled) ?? true
+        self.l3NLScanEnabled = try c.decodeIfPresent(Bool.self, forKey: .l3NLScanEnabled) ?? true
+        self.l2ExemptThreshold = try c.decodeIfPresent(Double.self, forKey: .l2ExemptThreshold) ?? 0.18
+        self.l3DetectThreshold = try c.decodeIfPresent(Double.self, forKey: .l3DetectThreshold) ?? 0.85
+        self.coprocessorSocket = try c.decodeIfPresent(String.self, forKey: .coprocessorSocket) ?? ""
+    }
+}
+
 struct GatewayConfig: Codable, Equatable {
     var listenAddr: String = "127.0.0.1:19840"
     var defaultLLMAction: String = "mask" // "mask" | "block"
@@ -308,8 +357,56 @@ struct GatewayConfig: Codable, Equatable {
     var protectedDomains: [String] = GatewayConfig.defaultProtectedDomains
     var upstreamProxyURL: String = ""
     var ruleGroups: GatewayRuleGroups = GatewayRuleGroups()
+    var aiFunnel: GatewayAIFunnelConfig = GatewayAIFunnelConfig()
     var customPatterns: [GatewayCustomPattern] = []
     var allowlist: [GatewayAllowlistEntry] = []
+
+    enum CodingKeys: String, CodingKey {
+        case listenAddr
+        case defaultLLMAction
+        case syncEnvSecrets
+        case protectedDomains
+        case upstreamProxyURL
+        case ruleGroups
+        case aiFunnel
+        case customPatterns
+        case allowlist
+    }
+
+    init(
+        listenAddr: String = "127.0.0.1:19840",
+        defaultLLMAction: String = "mask",
+        syncEnvSecrets: Bool = true,
+        protectedDomains: [String] = GatewayConfig.defaultProtectedDomains,
+        upstreamProxyURL: String = "",
+        ruleGroups: GatewayRuleGroups = GatewayRuleGroups(),
+        aiFunnel: GatewayAIFunnelConfig = GatewayAIFunnelConfig(),
+        customPatterns: [GatewayCustomPattern] = [],
+        allowlist: [GatewayAllowlistEntry] = []
+    ) {
+        self.listenAddr = listenAddr
+        self.defaultLLMAction = defaultLLMAction
+        self.syncEnvSecrets = syncEnvSecrets
+        self.protectedDomains = protectedDomains
+        self.upstreamProxyURL = upstreamProxyURL
+        self.ruleGroups = ruleGroups
+        self.aiFunnel = aiFunnel
+        self.customPatterns = customPatterns
+        self.allowlist = allowlist
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.listenAddr = try c.decodeIfPresent(String.self, forKey: .listenAddr) ?? "127.0.0.1:19840"
+        self.defaultLLMAction = try c.decodeIfPresent(String.self, forKey: .defaultLLMAction) ?? "mask"
+        self.syncEnvSecrets = try c.decodeIfPresent(Bool.self, forKey: .syncEnvSecrets) ?? true
+        self.protectedDomains = try c.decodeIfPresent([String].self, forKey: .protectedDomains) ?? GatewayConfig.defaultProtectedDomains
+        self.upstreamProxyURL = try c.decodeIfPresent(String.self, forKey: .upstreamProxyURL) ?? ""
+        self.ruleGroups = try c.decodeIfPresent(GatewayRuleGroups.self, forKey: .ruleGroups) ?? GatewayRuleGroups()
+        self.aiFunnel = try c.decodeIfPresent(GatewayAIFunnelConfig.self, forKey: .aiFunnel) ?? GatewayAIFunnelConfig()
+        self.customPatterns = try c.decodeIfPresent([GatewayCustomPattern].self, forKey: .customPatterns) ?? []
+        self.allowlist = try c.decodeIfPresent([GatewayAllowlistEntry].self, forKey: .allowlist) ?? []
+    }
 
     static let defaultProtectedDomains: [String] = [
         "api.anthropic.com",
@@ -334,13 +431,58 @@ struct GatewayDailyStats: Codable, Equatable {
     var blockedCount: Int = 0
     var gitScans: Int = 0
     var gitBlockedCount: Int = 0
+    var aiExemptedCount: Int = 0
+    var l3DetectedCount: Int = 0
+
+    enum CodingKeys: String, CodingKey {
+        case date
+        case scannedRequests
+        case maskedCount
+        case blockedCount
+        case gitScans
+        case gitBlockedCount
+        case aiExemptedCount
+        case l3DetectedCount
+    }
+
+    init(
+        date: String = "",
+        scannedRequests: Int = 0,
+        maskedCount: Int = 0,
+        blockedCount: Int = 0,
+        gitScans: Int = 0,
+        gitBlockedCount: Int = 0,
+        aiExemptedCount: Int = 0,
+        l3DetectedCount: Int = 0
+    ) {
+        self.date = date
+        self.scannedRequests = scannedRequests
+        self.maskedCount = maskedCount
+        self.blockedCount = blockedCount
+        self.gitScans = gitScans
+        self.gitBlockedCount = gitBlockedCount
+        self.aiExemptedCount = aiExemptedCount
+        self.l3DetectedCount = l3DetectedCount
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.date = try c.decodeIfPresent(String.self, forKey: .date) ?? ""
+        self.scannedRequests = try c.decodeIfPresent(Int.self, forKey: .scannedRequests) ?? 0
+        self.maskedCount = try c.decodeIfPresent(Int.self, forKey: .maskedCount) ?? 0
+        self.blockedCount = try c.decodeIfPresent(Int.self, forKey: .blockedCount) ?? 0
+        self.gitScans = try c.decodeIfPresent(Int.self, forKey: .gitScans) ?? 0
+        self.gitBlockedCount = try c.decodeIfPresent(Int.self, forKey: .gitBlockedCount) ?? 0
+        self.aiExemptedCount = try c.decodeIfPresent(Int.self, forKey: .aiExemptedCount) ?? 0
+        self.l3DetectedCount = try c.decodeIfPresent(Int.self, forKey: .l3DetectedCount) ?? 0
+    }
 }
 
 struct GatewayAuditEvent: Codable, Equatable, Identifiable {
     var id: String
     var timestamp: Date
     var channel: String       // "llm" | "github" | "git" | "self-test"
-    var action: String        // "masked" | "blocked"
+    var action: String        // "masked" | "blocked" | "ai_exempted"
     var target: String
     var client: String
     var category: String
@@ -348,9 +490,11 @@ struct GatewayAuditEvent: Codable, Equatable, Identifiable {
     var maskedPreview: String
     var fingerprint: String
     var location: String
+    var aiModel: String?
     var count: Int
 
     var isBlocked: Bool { action == "blocked" }
+    var isAIExempted: Bool { action == "ai_exempted" }
 
     var channelLabel: String {
         switch channel {
@@ -363,7 +507,11 @@ struct GatewayAuditEvent: Codable, Equatable, Identifiable {
     }
 
     var actionLabel: String {
-        action == "blocked" ? "已拦截" : "已脱敏并流式还原"
+        switch action {
+        case "blocked": return "已拦截"
+        case "ai_exempted": return "AI 复核放行"
+        default: return "已脱敏并流式还原"
+        }
     }
 }
 
@@ -376,9 +524,41 @@ struct GatewayDaemonStatus: Codable, Equatable {
     var defaultLLMAction: String
     var knownSecretCount: Int
     var activeVaultItems: Int
+    var activeAIModel: String
     var caCertPath: String
     var caFingerprint: String
     var stats: GatewayDailyStats
+
+    enum CodingKeys: String, CodingKey {
+        case running
+        case version
+        case pid
+        case uptimeSeconds
+        case listenAddr
+        case defaultLLMAction
+        case knownSecretCount
+        case activeVaultItems
+        case activeAIModel
+        case caCertPath
+        case caFingerprint
+        case stats
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.running = try c.decode(Bool.self, forKey: .running)
+        self.version = try c.decode(String.self, forKey: .version)
+        self.pid = try c.decode(Int.self, forKey: .pid)
+        self.uptimeSeconds = try c.decode(Int64.self, forKey: .uptimeSeconds)
+        self.listenAddr = try c.decode(String.self, forKey: .listenAddr)
+        self.defaultLLMAction = try c.decode(String.self, forKey: .defaultLLMAction)
+        self.knownSecretCount = try c.decode(Int.self, forKey: .knownSecretCount)
+        self.activeVaultItems = try c.decode(Int.self, forKey: .activeVaultItems)
+        self.activeAIModel = try c.decodeIfPresent(String.self, forKey: .activeAIModel) ?? "builtin-tiny-cnn"
+        self.caCertPath = try c.decode(String.self, forKey: .caCertPath)
+        self.caFingerprint = try c.decode(String.self, forKey: .caFingerprint)
+        self.stats = try c.decode(GatewayDailyStats.self, forKey: .stats)
+    }
 }
 
 struct GatewayEventsPayload: Codable {
